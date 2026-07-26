@@ -26,9 +26,6 @@ const _accentPalette = [
 Color _accentFor(String id) =>
     _accentPalette[id.hashCode.abs() % _accentPalette.length];
 
-const _dialogShape =
-    RoundedRectangleBorder(borderRadius: BorderRadius.all(Radius.circular(16)));
-
 /// Landing screen: lists every locally-saved project and lets the user
 /// open, rename, delete, or create one. [StudioScreen] (the tab editor)
 /// only ever works on a single project at a time — this is where picking
@@ -82,8 +79,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final controller = TextEditingController(text: summary.title);
     final newTitle = await showDialog<String>(
       context: context,
-      builder: (context) => AlertDialog(
-        shape: _dialogShape,
+      builder: (context) => GlassAlertDialog(
         title: const Text('Rename project'),
         content: TextField(
           controller: controller,
@@ -112,8 +108,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Future<void> _deleteProject(ProjectSummary summary) async {
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
-        shape: _dialogShape,
+      builder: (context) => GlassAlertDialog(
         title: const Text('Delete project?'),
         content: Text(
           '"${summary.title}" and its saved audio will be deleted. '

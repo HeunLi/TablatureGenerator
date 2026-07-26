@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:web/web.dart' as web;
 
 import '../models/tab_note.dart';
+import '../widgets/glass_panel.dart';
 import 'canvas_tab_renderer.dart';
 import 'webm_muxer.dart';
 
@@ -140,7 +141,7 @@ class _ExportSettingsDialogState extends State<_ExportSettingsDialog> {
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
+    return GlassAlertDialog(
       title: const Text('Export settings'),
       content: Column(
         mainAxisSize: MainAxisSize.min,
@@ -177,6 +178,7 @@ class _ExportSettingsDialogState extends State<_ExportSettingsDialog> {
           CheckboxListTile(
             contentPadding: EdgeInsets.zero,
             controlAffinity: ListTileControlAffinity.leading,
+            activeColor: accentColor,
             value: _showPlayhead,
             onChanged: (value) =>
                 setState(() => _showPlayhead = value ?? true),
@@ -280,7 +282,7 @@ class _ColorSwatch extends StatelessWidget {
             color: color,
             shape: BoxShape.circle,
             border: Border.all(
-              color: selected ? Colors.blueAccent : Colors.white24,
+              color: selected ? accentColor : Colors.white24,
               width: selected ? 2 : 1,
             ),
           ),
@@ -591,8 +593,8 @@ class _ExportDialogState extends State<_ExportDialog> {
   Widget build(BuildContext context) {
     return PopScope(
       canPop: false,
-      child: AlertDialog(
-        title: const Text('Exporting chroma-key video'),
+      child: GlassAlertDialog(
+        title: const Text('Exporting tablature'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -603,7 +605,11 @@ class _ExportDialogState extends State<_ExportDialog> {
                 style: const TextStyle(color: Colors.redAccent),
               )
             else ...[
-              LinearProgressIndicator(value: _progress),
+              LinearProgressIndicator(
+                value: _progress,
+                color: accentColor,
+                backgroundColor: Colors.white.withValues(alpha: 0.1),
+              ),
               const SizedBox(height: 8),
               Text(_status),
               if (_usingFastPath == false) ...[

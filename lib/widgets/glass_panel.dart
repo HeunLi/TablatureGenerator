@@ -72,3 +72,85 @@ const backgroundGradient = LinearGradient(
 /// The dashboard's violet accent, reused here so the studio's chips/rings/
 /// highlights are drawn from the same palette rather than a second one.
 const accentColor = Color(0xFF7C5CFC);
+
+/// Shared rounded shape, kept around for any spot that still wraps a plain
+/// `AlertDialog` rather than [GlassAlertDialog].
+const dialogShape =
+    RoundedRectangleBorder(borderRadius: BorderRadius.all(Radius.circular(16)));
+
+/// A drop-in `AlertDialog` replacement styled with the same glass chrome as
+/// the rest of the app (dashboard cards, studio toolbar/transport/floating
+/// panel) — used by every dialog (project rename/delete, BPM entry, export
+/// settings, export progress) so none of them are left looking like a
+/// stock Material dialog while everything around them is glass.
+///
+/// A plain `AlertDialog` with just a rounded `shape` was tried first and
+/// turned out to be too subtle a change to actually read as "restyled" —
+/// Material 3's default dialog already has ~28dp rounded corners, so a
+/// 16dp override barely differs, and the opaque solid-gray surface is the
+/// part that actually looks out of place next to the blurred glass used
+/// everywhere else. This builds the dialog chrome from scratch instead of
+/// theming `AlertDialog`, since `AlertDialog` doesn't expose a way to make
+/// its surface a `BackdropFilter`.
+class GlassAlertDialog extends StatelessWidget {
+  const GlassAlertDialog({
+    super.key,
+    required this.title,
+    required this.content,
+    this.actions = const [],
+  });
+
+  final Widget title;
+  final Widget content;
+  final List<Widget> actions;
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      shape: dialogShape,
+      child: GlassPanel(
+        opacity: 0.09,
+        blurSigma: 24,
+        padding: const EdgeInsets.fromLTRB(24, 20, 24, 16),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 420),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              DefaultTextStyle(
+                style: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.white,
+                ),
+                child: title,
+              ),
+              const SizedBox(height: 16),
+              DefaultTextStyle(
+                style: TextStyle(
+                  fontSize: 14,
+                  color: Colors.white.withValues(alpha: 0.75),
+                ),
+                child: content,
+              ),
+              if (actions.isNotEmpty) ...[
+                const SizedBox(height: 20),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    for (var i = 0; i < actions.length; i++) ...[
+                      if (i > 0) const SizedBox(width: 4),
+                      actions[i],
+                    ],
+                  ],
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}

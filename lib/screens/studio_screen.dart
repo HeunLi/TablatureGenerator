@@ -469,7 +469,7 @@ class _StudioScreenState extends State<StudioScreen>
         TextEditingController(text: _project.bpm.toStringAsFixed(0));
     final result = await showDialog<double>(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (context) => GlassAlertDialog(
         title: const Text('Set BPM'),
         content: TextField(
           controller: controller,
