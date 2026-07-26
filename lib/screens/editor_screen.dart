@@ -43,6 +43,7 @@ class _EditorScreenState extends State<EditorScreen> {
   String? _audioExtension;
   int? _selectedIndex;
   int? _draggingIndex;
+  int _highlightBeats = 4;
 
   static const _pixelsPerSecond = 120.0;
   static const _layout = TabTimelineLayout(
@@ -206,7 +207,23 @@ class _EditorScreenState extends State<EditorScreen> {
       notes: _project.notes,
       bpm: _project.bpm,
       totalDuration: duration,
+      beatsPerMeasure: _project.beatsPerMeasure,
+      highlightBeats: _highlightBeats,
     );
+  }
+
+  void _adjustHighlightBeats(int delta) {
+    setState(() {
+      _highlightBeats = (_highlightBeats + delta).clamp(1, 16);
+    });
+  }
+
+  void _adjustBeatsPerMeasure(int delta) {
+    setState(() {
+      _project = _project.copyWith(
+        beatsPerMeasure: (_project.beatsPerMeasure + delta).clamp(1, 12),
+      );
+    });
   }
 
   void _handleTapUp(TapUpDetails details) {
@@ -322,6 +339,52 @@ class _EditorScreenState extends State<EditorScreen> {
               'Select a note to edit its fret or delete it.',
               style: TextStyle(color: Colors.white54, fontSize: 12),
             ),
+            const SizedBox(height: 4),
+            Row(
+              children: [
+                const Text(
+                  'Time signature:',
+                  style: TextStyle(color: Colors.white54, fontSize: 12),
+                ),
+                IconButton(
+                  iconSize: 18,
+                  visualDensity: VisualDensity.compact,
+                  icon: const Icon(Icons.remove_circle_outline),
+                  onPressed: () => _adjustBeatsPerMeasure(-1),
+                ),
+                Text(
+                  '${_project.beatsPerMeasure}/4',
+                  style: const TextStyle(fontSize: 13),
+                ),
+                IconButton(
+                  iconSize: 18,
+                  visualDensity: VisualDensity.compact,
+                  icon: const Icon(Icons.add_circle_outline),
+                  onPressed: () => _adjustBeatsPerMeasure(1),
+                ),
+                const SizedBox(width: 16),
+                const Text(
+                  'Highlight:',
+                  style: TextStyle(color: Colors.white54, fontSize: 12),
+                ),
+                IconButton(
+                  iconSize: 18,
+                  visualDensity: VisualDensity.compact,
+                  icon: const Icon(Icons.remove_circle_outline),
+                  onPressed: () => _adjustHighlightBeats(-1),
+                ),
+                Text(
+                  '$_highlightBeats beat${_highlightBeats == 1 ? '' : 's'}',
+                  style: const TextStyle(fontSize: 13),
+                ),
+                IconButton(
+                  iconSize: 18,
+                  visualDensity: VisualDensity.compact,
+                  icon: const Icon(Icons.add_circle_outline),
+                  onPressed: () => _adjustHighlightBeats(1),
+                ),
+              ],
+            ),
             const SizedBox(height: 8),
             Expanded(
               child: SingleChildScrollView(
@@ -341,6 +404,8 @@ class _EditorScreenState extends State<EditorScreen> {
                         playhead: _playhead,
                         bpm: _project.bpm,
                         totalSeconds: _totalSeconds,
+                        beatsPerMeasure: _project.beatsPerMeasure,
+                        highlightBeats: _highlightBeats,
                         selectedIndex: _selectedIndex,
                       ),
                       size: Size(_totalSeconds * _pixelsPerSecond + 80, 220),

@@ -1,12 +1,20 @@
-# bass_tab_studio
+# Bass Tab Studio
 
-A new Flutter project.
+A Flutter **web** app for creating bass guitar tablature synced to an
+audio track, previewing it in sync, and exporting a chroma-key overlay
+video to composite over other footage in a video editor. No backend —
+everything (audio, project data, rendering, export) runs client-side in
+the browser, entirely free to run and host.
 
-## Getting Started
+## Running it
 
-This project is a starting point for a Flutter application.
+```
+flutter run -d chrome
+```
 
-A few resources to get you started if this is your first Flutter project:
+## Getting Started (Flutter boilerplate)
+
+A few resources if this is your first Flutter project:
 
 - [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
 - [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)

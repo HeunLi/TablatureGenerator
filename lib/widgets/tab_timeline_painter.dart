@@ -14,6 +14,8 @@ class TabTimelinePainter extends CustomPainter {
     required this.playhead,
     required this.bpm,
     required this.totalSeconds,
+    this.beatsPerMeasure = 4,
+    this.highlightBeats = 4,
     this.selectedIndex,
   });
 
@@ -22,6 +24,16 @@ class TabTimelinePainter extends CustomPainter {
   final Duration playhead;
   final double bpm;
   final double totalSeconds;
+
+  /// Time signature numerator (e.g. 4 for 4/4, 3 for 3/4) — controls where
+  /// the brighter measure bar-lines fall.
+  final int beatsPerMeasure;
+
+  /// How many beats light up together as one highlight block. Independent
+  /// of [beatsPerMeasure] — a 3/4 song might want exactly 3 beats
+  /// highlighted, not a fixed measure width.
+  final int highlightBeats;
+
   final int? selectedIndex;
 
   bool _isRinging(TabNote note) {
@@ -44,16 +56,44 @@ class TabTimelinePainter extends CustomPainter {
         (TabTimelineLayout.stringOrderTopToBottom.length - 1) *
             layout.stringSpacing;
 
-    // Beat subdivision grid lines.
+    // Current highlight block — previews the block used in the exported
+    // video, computed with the same shared math so both agree on where it
+    // falls. Sized in beats directly, independent of the measure width.
+    final (blockStart, blockEnd) = TabTimelineLayout.beatBlockBoundsSeconds(
+      playhead,
+      bpm,
+      highlightBeats,
+    );
+    if (blockEnd > blockStart) {
+      final x0 = layout.xForTime(
+        Duration(microseconds: (blockStart * 1e6).round()),
+      );
+      final x1 = layout.xForTime(
+        Duration(microseconds: (blockEnd * 1e6).round()),
+      );
+      canvas.drawRect(
+        Rect.fromLTRB(x0, layout.topPadding - 16, x1, bottomY + 16),
+        Paint()..color = const Color(0x59FFEB3B), // amber @ ~35% opacity
+      );
+    }
+
+    // Beat subdivision grid lines; a brighter line marks each measure
+    // boundary (every beatsPerMeasure beats), matching the project's
+    // actual time signature instead of assuming 4/4.
     final beatMs = 60000 / bpm;
     final gridMs = beatMs / 4;
+    final measurePaint = Paint()
+      ..color = Colors.white38
+      ..strokeWidth = 1.5;
     for (double ms = 0; ms <= totalSeconds * 1000; ms += gridMs) {
       final x = layout.xForTime(Duration(milliseconds: ms.round()));
+      final beatIndex = (ms / beatMs).round();
       final isBeat = (ms % beatMs).abs() < 1 || (beatMs - ms % beatMs) < 1;
+      final isMeasureLine = isBeat && beatIndex % beatsPerMeasure == 0;
       canvas.drawLine(
         Offset(x, layout.topPadding - 10),
         Offset(x, bottomY + 10),
-        isBeat ? linePaint : gridPaint,
+        isMeasureLine ? measurePaint : (isBeat ? linePaint : gridPaint),
       );
     }
 
@@ -135,6 +175,8 @@ class TabTimelinePainter extends CustomPainter {
     return oldDelegate.notes != notes ||
         oldDelegate.playhead != playhead ||
         oldDelegate.selectedIndex != selectedIndex ||
+        oldDelegate.highlightBeats != highlightBeats ||
+        oldDelegate.beatsPerMeasure != beatsPerMeasure ||
         oldDelegate.layout != layout;
   }
 }

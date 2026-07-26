@@ -71,4 +71,25 @@ class TabTimelineLayout {
     final snappedMs = (time.inMilliseconds / gridMs).round() * gridMs;
     return Duration(milliseconds: snappedMs.round().clamp(0, 1 << 30));
   }
+
+  /// Start/end (in seconds from the timeline origin) of a block of
+  /// [beatsPerBlock] consecutive beats containing [currentTime] — used both
+  /// for the highlight block (independent of the measure/time signature —
+  /// a 3/4 song might only want 3 beats highlighted, not a fixed 4) and for
+  /// measure-width math (pass the project's actual beats-per-measure).
+  /// Shared by the editor's live preview and the export renderer so both
+  /// always agree on where a block boundary falls.
+  static (double start, double end) beatBlockBoundsSeconds(
+    Duration currentTime,
+    double bpm,
+    int beatsPerBlock,
+  ) {
+    final blockDuration = beatsPerBlock * 60 / bpm;
+    if (blockDuration <= 0) return (0, 0);
+    final currentSeconds =
+        currentTime.inMicroseconds / Duration.microsecondsPerSecond;
+    final index = (currentSeconds / blockDuration).floor();
+    final start = index * blockDuration;
+    return (start, start + blockDuration);
+  }
 }
