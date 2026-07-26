@@ -40,6 +40,7 @@ class CanvasTabRenderer {
     this.measuresPerWindow = 6,
     this.beatsPerMeasure = 4,
     this.highlightBeats = 4,
+    this.showPlayhead = true,
   });
 
   final web.CanvasRenderingContext2D ctx;
@@ -63,6 +64,12 @@ class CanvasTabRenderer {
   /// of [beatsPerMeasure] — a 3/4 song might want exactly 3 beats
   /// highlighted, not a fixed measure width.
   final int highlightBeats;
+
+  /// Whether to draw the thin sweeping playhead line. The amber
+  /// beat-highlight block is drawn either way — some users find just the
+  /// line distracting, but still want the highlight block to show which
+  /// beats are current.
+  final bool showPlayhead;
 
   static const _stringOrder = TabTimelineLayout.stringOrderTopToBottom;
 
@@ -104,7 +111,7 @@ class CanvasTabRenderer {
     _drawMeasureHighlight(currentTime, windowStart);
     _drawStringLines();
     _drawNotes(notes, windowStart);
-    _drawPlayhead(currentTime, windowStart);
+    if (showPlayhead) _drawPlayhead(currentTime, windowStart);
     _drawWindowLabel(currentTime);
   }
 

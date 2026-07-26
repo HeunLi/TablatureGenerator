@@ -38,11 +38,11 @@ class TabVideoExporter {
     required int beatsPerMeasure,
     required int highlightBeats,
   }) async {
-    final measuresPerWindow = await showDialog<int>(
+    final settings = await showDialog<_ExportSettings>(
       context: context,
       builder: (_) => const _ExportSettingsDialog(),
     );
-    if (measuresPerWindow == null || !context.mounted) return;
+    if (settings == null || !context.mounted) return;
 
     await showDialog<void>(
       context: context,
@@ -52,17 +52,31 @@ class TabVideoExporter {
         bpm: bpm,
         totalDuration: totalDuration,
         beatsPerMeasure: beatsPerMeasure,
-        measuresPerWindow: measuresPerWindow,
+        measuresPerWindow: settings.measuresPerWindow,
         highlightBeats: highlightBeats,
+        showPlayhead: settings.showPlayhead,
       ),
     );
   }
 }
 
-/// Lets the user pick how many measures are visible per page before
-/// rendering starts. Time signature and highlight-block size aren't asked
-/// here — they're already set in the editor, so export just uses those
-/// directly rather than making the user configure them twice.
+/// Result of [_ExportSettingsDialog].
+class _ExportSettings {
+  const _ExportSettings({
+    required this.measuresPerWindow,
+    required this.showPlayhead,
+  });
+
+  final int measuresPerWindow;
+  final bool showPlayhead;
+}
+
+/// Lets the user pick how many measures are visible per page, and whether
+/// the sweeping playhead line (and its accompanying highlight block) shows
+/// up in the rendered video, before rendering starts. Time signature and
+/// highlight-block size aren't asked here — they're already set in the
+/// editor, so export just uses those directly rather than making the user
+/// configure them twice.
 class _ExportSettingsDialog extends StatefulWidget {
   const _ExportSettingsDialog();
 
@@ -75,6 +89,7 @@ class _ExportSettingsDialogState extends State<_ExportSettingsDialog> {
   static const _maxWindow = 12;
 
   int _measuresPerWindow = 6;
+  bool _showPlayhead = true;
 
   void _adjustWindow(int delta) {
     setState(() {
@@ -120,6 +135,19 @@ class _ExportSettingsDialogState extends State<_ExportSettingsDialog> {
               ),
             ],
           ),
+          const SizedBox(height: 8),
+          CheckboxListTile(
+            contentPadding: EdgeInsets.zero,
+            controlAffinity: ListTileControlAffinity.leading,
+            value: _showPlayhead,
+            onChanged: (value) =>
+                setState(() => _showPlayhead = value ?? true),
+            title: const Text('Show playhead line', style: TextStyle(fontSize: 14)),
+            subtitle: const Text(
+              'The amber beat-highlight block stays either way.',
+              style: TextStyle(fontSize: 12),
+            ),
+          ),
         ],
       ),
       actions: [
@@ -128,7 +156,12 @@ class _ExportSettingsDialogState extends State<_ExportSettingsDialog> {
           child: const Text('Cancel'),
         ),
         FilledButton(
-          onPressed: () => Navigator.of(context).pop(_measuresPerWindow),
+          onPressed: () => Navigator.of(context).pop(
+            _ExportSettings(
+              measuresPerWindow: _measuresPerWindow,
+              showPlayhead: _showPlayhead,
+            ),
+          ),
           child: const Text('Start Export'),
         ),
       ],
@@ -144,6 +177,7 @@ class _ExportDialog extends StatefulWidget {
     required this.beatsPerMeasure,
     required this.measuresPerWindow,
     required this.highlightBeats,
+    required this.showPlayhead,
   });
 
   final List<TabNote> notes;
@@ -152,6 +186,7 @@ class _ExportDialog extends StatefulWidget {
   final int beatsPerMeasure;
   final int measuresPerWindow;
   final int highlightBeats;
+  final bool showPlayhead;
 
   @override
   State<_ExportDialog> createState() => _ExportDialogState();
@@ -399,6 +434,7 @@ class _ExportDialogState extends State<_ExportDialog> {
     measuresPerWindow: widget.measuresPerWindow,
     beatsPerMeasure: widget.beatsPerMeasure,
     highlightBeats: widget.highlightBeats,
+    showPlayhead: widget.showPlayhead,
   );
 
   /// Draws straight onto the native `<canvas>` via [CanvasTabRenderer] — no

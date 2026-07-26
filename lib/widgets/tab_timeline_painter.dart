@@ -16,7 +16,7 @@ class TabTimelinePainter extends CustomPainter {
     required this.totalSeconds,
     this.beatsPerMeasure = 4,
     this.highlightBeats = 4,
-    this.selectedIndex,
+    this.selectedIndices = const {},
     this.windowStartSeconds = 0,
     double? windowEndSeconds,
   }) : windowEndSeconds = windowEndSeconds ?? totalSeconds;
@@ -47,7 +47,7 @@ class TabTimelinePainter extends CustomPainter {
   /// highlighted, not a fixed measure width.
   final int highlightBeats;
 
-  final int? selectedIndex;
+  final Set<int> selectedIndices;
 
   bool _isRinging(TabNote note) {
     final start = note.timeOffset;
@@ -150,7 +150,7 @@ class TabTimelinePainter extends CustomPainter {
       final x = layout.xForTime(note.timeOffset);
       final y = layout.yForString(note.string);
       final ringing = _isRinging(note);
-      final selected = i == selectedIndex;
+      final selected = selectedIndices.contains(i);
 
       if (selected) {
         canvas.drawCircle(
@@ -197,7 +197,7 @@ class TabTimelinePainter extends CustomPainter {
   bool shouldRepaint(covariant TabTimelinePainter oldDelegate) {
     return oldDelegate.notes != notes ||
         oldDelegate.playhead != playhead ||
-        oldDelegate.selectedIndex != selectedIndex ||
+        oldDelegate.selectedIndices != selectedIndices ||
         oldDelegate.highlightBeats != highlightBeats ||
         oldDelegate.beatsPerMeasure != beatsPerMeasure ||
         oldDelegate.bpm != bpm ||

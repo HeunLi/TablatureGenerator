@@ -1,11 +1,10 @@
 import 'dart:async';
 
-import 'dart:typed_data';
-
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
+import 'package:flutter/services.dart';
 import 'package:just_audio/just_audio.dart';
 
 import '../audio/audio_controller.dart';
@@ -81,9 +80,31 @@ class _EditorScreenState extends State<EditorScreen>
   String? _audioFileName;
   Uint8List? _audioBytes;
   String? _audioExtension;
-  int? _selectedIndex;
-  int? _draggingIndex;
+  // Shift+click toggles membership in this set instead of replacing it,
+  // for selecting multiple notes at once. A plain click replaces it with a
+  // single-element set.
+  Set<int> _selectedIndices = {};
+
+  // Snapshot of the dragged notes' original state, captured at pan-start,
+  // so every note in the drag moves by the same delta relative to where it
+  // started rather than all snapping to the cursor position independently.
+  Map<int, TabNote>? _dragOriginalNotes;
+  Offset? _dragStartPosition;
+
+  // Manual double-click tracking (rather than a DoubleTapGestureRecognizer)
+  // so a single click on a note still selects it immediately instead of
+  // waiting out `kDoubleTapTimeout` to see if a second tap follows.
+  int? _lastTapNoteIndex;
+  DateTime? _lastTapTime;
+
   int _highlightBeats = 4;
+
+  // When off, notes are placed/dragged at the exact clicked time instead of
+  // being forced onto the BPM-derived grid — needed for tracks whose real
+  // tempo doesn't precisely match the set BPM (or has any rubato/human
+  // timing drift), where grid-snapping otherwise pulls every note off its
+  // true audio position.
+  bool _snapToGrid = true;
   final _timelineScrollController = ScrollController();
 
   // The buffered [start, end] time range (seconds) that the timeline
@@ -299,8 +320,6 @@ class _EditorScreenState extends State<EditorScreen>
     setState(_recomputeWindow);
   }
 
-  TabNote? get _selectedNote =>
-      _selectedIndex == null ? null : _project.notes[_selectedIndex!];
 
   void _updateNotes(List<TabNote> Function(List<TabNote>) transform) {
     setState(() {
@@ -458,15 +477,47 @@ class _EditorScreenState extends State<EditorScreen>
 
   void _handleTapUp(TapUpDetails details) {
     final hit = _layout.hitTestNoteIndex(_project.notes, details.localPosition);
+    final shiftHeld = HardwareKeyboard.instance.isShiftPressed;
     if (hit != null) {
-      setState(() => _selectedIndex = hit);
+      if (!shiftHeld) {
+        final now = DateTime.now();
+        final isDoubleClick = _lastTapNoteIndex == hit &&
+            _lastTapTime != null &&
+            now.difference(_lastTapTime!) <= kDoubleTapTimeout;
+        _lastTapNoteIndex = hit;
+        _lastTapTime = now;
+        if (isDoubleClick) {
+          _lastTapNoteIndex = null;
+          _lastTapTime = null;
+          _deleteNoteAt(hit);
+          return;
+        }
+      }
+      setState(() {
+        if (shiftHeld) {
+          // Toggle membership so shift-clicking an already-selected note
+          // removes it from the selection instead of just no-oping.
+          _selectedIndices = _selectedIndices.contains(hit)
+              ? ({..._selectedIndices}..remove(hit))
+              : {..._selectedIndices, hit};
+        } else {
+          _selectedIndices = {hit};
+        }
+      });
       return;
     }
 
-    final time = _layout.snapToGrid(
-      _layout.timeForX(details.localPosition.dx),
-      _project.bpm,
-    );
+    _lastTapNoteIndex = null;
+    _lastTapTime = null;
+
+    // Shift-clicking empty space is presumably an attempt to extend the
+    // selection that missed a note, not a request to add a new one.
+    if (shiftHeld) return;
+
+    final rawTime = _layout.timeForX(details.localPosition.dx);
+    final time = _snapToGrid
+        ? _layout.snapToGrid(rawTime, _project.bpm)
+        : rawTime;
     final string = _layout.stringForY(details.localPosition.dy);
     final newNote = TabNote(
       string: string,
@@ -475,51 +526,100 @@ class _EditorScreenState extends State<EditorScreen>
       duration: const Duration(milliseconds: 400),
     );
     _updateNotes((notes) => notes..add(newNote));
-    setState(() => _selectedIndex = _project.notes.length - 1);
+    setState(() => _selectedIndices = {_project.notes.length - 1});
   }
 
   void _handlePanStart(DragStartDetails details) {
-    _draggingIndex =
-        _layout.hitTestNoteIndex(_project.notes, details.localPosition);
-    if (_draggingIndex != null) {
-      setState(() => _selectedIndex = _draggingIndex);
+    final hit = _layout.hitTestNoteIndex(_project.notes, details.localPosition);
+    if (hit == null) {
+      _dragOriginalNotes = null;
+      _dragStartPosition = null;
+      return;
     }
+    // Dragging a note outside the current selection starts a fresh
+    // single-note selection/drag rather than dragging the whole old group.
+    if (!_selectedIndices.contains(hit)) {
+      setState(() => _selectedIndices = {hit});
+    }
+    _dragStartPosition = details.localPosition;
+    _dragOriginalNotes = {
+      for (final index in _selectedIndices) index: _project.notes[index],
+    };
   }
 
   void _handlePanUpdate(DragUpdateDetails details) {
-    final index = _draggingIndex;
-    if (index == null) return;
-    final time = _layout.snapToGrid(
-      _layout.timeForX(details.localPosition.dx),
-      _project.bpm,
+    final originals = _dragOriginalNotes;
+    final start = _dragStartPosition;
+    if (originals == null || start == null) return;
+
+    final pixelDx = details.localPosition.dx - start.dx;
+    final pixelDy = details.localPosition.dy - start.dy;
+    final deltaTime = Duration(
+      microseconds:
+          (pixelDx / _layout.pixelsPerSecond * Duration.microsecondsPerSecond)
+              .round(),
     );
-    final string = _layout.stringForY(details.localPosition.dy);
+    final stringDelta = (pixelDy / _layout.stringSpacing).round();
+    const stringOrder = TabTimelineLayout.stringOrderTopToBottom;
+
     _updateNotes((notes) {
-      notes[index] = notes[index].copyWith(timeOffset: time, string: string);
+      for (final entry in originals.entries) {
+        var newTime = entry.value.timeOffset + deltaTime;
+        if (newTime.isNegative) newTime = Duration.zero;
+        if (_snapToGrid) newTime = _layout.snapToGrid(newTime, _project.bpm);
+        final originalStringIndex = stringOrder.indexOf(entry.value.string);
+        final newStringIndex = (originalStringIndex + stringDelta)
+            .clamp(0, stringOrder.length - 1);
+        notes[entry.key] = notes[entry.key].copyWith(
+          timeOffset: newTime,
+          string: stringOrder[newStringIndex],
+        );
+      }
       return notes;
     });
   }
 
   void _handlePanEnd(DragEndDetails details) {
-    _draggingIndex = null;
+    _dragOriginalNotes = null;
+    _dragStartPosition = null;
   }
 
   void _adjustFret(int delta) {
-    final index = _selectedIndex;
-    if (index == null) return;
+    if (_selectedIndices.isEmpty) return;
     _updateNotes((notes) {
-      final current = notes[index];
-      final newFret = (current.fret + delta).clamp(0, 24);
-      notes[index] = current.copyWith(fret: newFret);
+      for (final index in _selectedIndices) {
+        final current = notes[index];
+        notes[index] = current.copyWith(fret: (current.fret + delta).clamp(0, 24));
+      }
       return notes;
     });
   }
 
   void _deleteSelected() {
-    final index = _selectedIndex;
-    if (index == null) return;
+    if (_selectedIndices.isEmpty) return;
+    final sortedDescending = _selectedIndices.toList()
+      ..sort((a, b) => b.compareTo(a));
+    _updateNotes((notes) {
+      for (final index in sortedDescending) {
+        notes.removeAt(index);
+      }
+      return notes;
+    });
+    setState(() => _selectedIndices = {});
+  }
+
+  /// Deletes a single note by index (double-click shortcut) — separate from
+  /// [_deleteSelected] because the target isn't necessarily part of the
+  /// current multi-selection, so the rest of the selection needs its
+  /// indices shifted down rather than cleared.
+  void _deleteNoteAt(int index) {
     _updateNotes((notes) => notes..removeAt(index));
-    setState(() => _selectedIndex = null);
+    setState(() {
+      _selectedIndices = {
+        for (final i in _selectedIndices)
+          if (i != index) (i > index ? i - 1 : i),
+      };
+    });
   }
 
   @override
@@ -642,6 +742,15 @@ class _EditorScreenState extends State<EditorScreen>
                   icon: const Icon(Icons.add_circle_outline),
                   onPressed: () => _adjustHighlightBeats(1),
                 ),
+                const SizedBox(width: 16),
+                const Text(
+                  'Snap to grid:',
+                  style: TextStyle(color: Colors.white54, fontSize: 12),
+                ),
+                Switch(
+                  value: _snapToGrid,
+                  onChanged: (value) => setState(() => _snapToGrid = value),
+                ),
               ],
             ),
             const SizedBox(height: 8),
@@ -700,7 +809,7 @@ class _EditorScreenState extends State<EditorScreen>
                               totalSeconds: _totalSeconds,
                               beatsPerMeasure: _project.beatsPerMeasure,
                               highlightBeats: _highlightBeats,
-                              selectedIndex: _selectedIndex,
+                              selectedIndices: _selectedIndices,
                               windowStartSeconds: _windowStart,
                               windowEndSeconds: _windowEnd,
                             ),
@@ -762,8 +871,7 @@ class _EditorScreenState extends State<EditorScreen>
   }
 
   Widget _buildEditPanel() {
-    final note = _selectedNote;
-    if (note == null) {
+    if (_selectedIndices.isEmpty) {
       return const SizedBox(
         height: 48,
         child: Center(
@@ -774,18 +882,27 @@ class _EditorScreenState extends State<EditorScreen>
         ),
       );
     }
+    // Single-selection shows the exact string/fret; multi-selection shows a
+    // count and lets fret +/- apply as a relative shift to every selected
+    // note (their frets may differ, so there's no single value to display).
+    final single = _selectedIndices.length == 1
+        ? _project.notes[_selectedIndices.single]
+        : null;
     return SizedBox(
       height: 48,
       child: Row(
         children: [
-          Text('String ${note.string.name.toUpperCase()}'),
+          Text(single != null
+              ? 'String ${single.string.name.toUpperCase()}'
+              : '${_selectedIndices.length} notes selected'),
           const SizedBox(width: 16),
           const Text('Fret:'),
           IconButton(
             icon: const Icon(Icons.remove_circle_outline),
             onPressed: () => _adjustFret(-1),
           ),
-          Text('${note.fret}', style: const TextStyle(fontSize: 16)),
+          Text(single != null ? '${single.fret}' : '±',
+              style: const TextStyle(fontSize: 16)),
           IconButton(
             icon: const Icon(Icons.add_circle_outline),
             onPressed: () => _adjustFret(1),
@@ -794,9 +911,9 @@ class _EditorScreenState extends State<EditorScreen>
           TextButton.icon(
             onPressed: _deleteSelected,
             icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
-            label: const Text(
-              'Delete',
-              style: TextStyle(color: Colors.redAccent),
+            label: Text(
+              single != null ? 'Delete' : 'Delete all',
+              style: const TextStyle(color: Colors.redAccent),
             ),
           ),
         ],
