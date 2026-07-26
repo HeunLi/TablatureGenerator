@@ -114,6 +114,26 @@ class TabTimelinePainter extends CustomPainter {
         Offset(x, bottomY + 10),
         isMeasureLine ? measurePaint : (isBeat ? linePaint : gridPaint),
       );
+
+      // Measure number, drawn above the grid at each measure boundary so
+      // it's obvious which measure you're looking at while scrolled deep
+      // into a long track — easy to lose track of otherwise since nothing
+      // else on the timeline is numbered.
+      if (isMeasureLine) {
+        final measureNumber = beatIndex ~/ beatsPerMeasure + 1;
+        final tp = TextPainter(
+          text: TextSpan(
+            text: '$measureNumber',
+            style: TextStyle(
+              color: accentColor.withValues(alpha: 0.85),
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          textDirection: TextDirection.ltr,
+        )..layout();
+        tp.paint(canvas, Offset(x - tp.width / 2, 4));
+      }
     }
 
     // String lines + labels.
