@@ -1,4 +1,5 @@
 import 'dart:js_interop';
+import 'dart:math' as math;
 
 import 'package:web/web.dart' as web;
 
@@ -73,6 +74,26 @@ class CanvasTabRenderer {
 
   static const _stringOrder = TabTimelineLayout.stringOrderTopToBottom;
 
+  /// Perceived luminance (0=black, 1=white) of [backgroundColor], used to
+  /// pick a readable foreground for string lines/fret text/labels — a
+  /// hardcoded dark foreground (fine for the original bright chroma-green
+  /// default) would be invisible against a dark background color.
+  double get _backgroundLuminance {
+    final hex = backgroundColor.replaceFirst('#', '');
+    if (hex.length != 6) return 1.0;
+    final r = int.parse(hex.substring(0, 2), radix: 16) / 255;
+    final g = int.parse(hex.substring(2, 4), radix: 16) / 255;
+    final b = int.parse(hex.substring(4, 6), radix: 16) / 255;
+    return 0.299 * r + 0.587 * g + 0.114 * b;
+  }
+
+  bool get _isDarkBackground => _backgroundLuminance <= 0.5;
+
+  String get _foregroundColor => _isDarkBackground ? '#F5F5F5' : '#1A1A1A';
+  String get _foregroundColorMuted => _isDarkBackground
+      ? 'rgba(255, 255, 255, 0.65)'
+      : 'rgba(0, 0, 0, 0.55)';
+
   double get _bottomY =>
       topPadding + (_stringOrder.length - 1) * stringSpacing;
 
@@ -131,7 +152,7 @@ class CanvasTabRenderer {
   }
 
   void _drawStringLines() {
-    ctx.strokeStyle = 'rgba(0, 0, 0, 0.55)'.toJS;
+    ctx.strokeStyle = _foregroundColorMuted.toJS;
     ctx.lineWidth = 1;
     for (final string in _stringOrder) {
       final y = _yForString(string);
@@ -155,9 +176,11 @@ class CanvasTabRenderer {
       // Blank out the string line under the digit so it reads clearly,
       // same convention as printed tab.
       ctx.fillStyle = backgroundColor.toJS;
-      ctx.fillRect(x - 10, y - 10, 20, 20);
+      ctx.beginPath();
+      ctx.arc(x, y, 10, 0, 2 * math.pi);
+      ctx.fill();
 
-      ctx.fillStyle = '#1A1A1A'.toJS;
+      ctx.fillStyle = _foregroundColor.toJS;
       ctx.fillText('${note.fret}', x, y + 1);
     }
   }
@@ -186,7 +209,7 @@ class CanvasTabRenderer {
     ctx.textAlign = 'right';
     ctx.textBaseline = 'alphabetic';
     ctx.font = '12px sans-serif';
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.55)'.toJS;
+    ctx.fillStyle = _foregroundColorMuted.toJS;
     ctx.fillText('$windowNumber / $totalWindows', width - 12, 20);
   }
 }

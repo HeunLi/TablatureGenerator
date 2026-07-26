@@ -55,6 +55,7 @@ class TabVideoExporter {
         measuresPerWindow: settings.measuresPerWindow,
         highlightBeats: highlightBeats,
         showPlayhead: settings.showPlayhead,
+        backgroundColor: settings.backgroundColor,
       ),
     );
   }
@@ -65,10 +66,14 @@ class _ExportSettings {
   const _ExportSettings({
     required this.measuresPerWindow,
     required this.showPlayhead,
+    required this.backgroundColor,
   });
 
   final int measuresPerWindow;
   final bool showPlayhead;
+
+  /// CSS hex color string, e.g. '#FFFFFF'.
+  final String backgroundColor;
 }
 
 /// Lets the user pick how many measures are visible per page, and whether
@@ -87,9 +92,18 @@ class _ExportSettingsDialog extends StatefulWidget {
 class _ExportSettingsDialogState extends State<_ExportSettingsDialog> {
   static const _minWindow = 2;
   static const _maxWindow = 12;
+  static const _presetColors = {
+    'White': '#FFFFFF',
+    'Chroma green': '#00B140',
+    'Chroma blue': '#0047AB',
+    'Black': '#000000',
+  };
+  static final _hexPattern = RegExp(r'^#[0-9A-Fa-f]{6}$');
 
   int _measuresPerWindow = 6;
   bool _showPlayhead = true;
+  String _backgroundColorHex = '#FFFFFF';
+  late final _colorController = TextEditingController(text: _backgroundColorHex);
 
   void _adjustWindow(int delta) {
     setState(() {
@@ -98,6 +112,30 @@ class _ExportSettingsDialogState extends State<_ExportSettingsDialog> {
         _maxWindow,
       );
     });
+  }
+
+  void _setBackgroundColor(String hex) {
+    setState(() {
+      _backgroundColorHex = hex;
+      _colorController.text = hex;
+    });
+  }
+
+  void _onHexChanged(String value) {
+    final trimmed = value.trim();
+    final normalized = trimmed.startsWith('#') ? trimmed : '#$trimmed';
+    if (_hexPattern.hasMatch(normalized)) {
+      setState(() => _backgroundColorHex = normalized.toUpperCase());
+    }
+  }
+
+  Color _colorFromHex(String hex) =>
+      Color(int.parse('FF${hex.substring(1)}', radix: 16));
+
+  @override
+  void dispose() {
+    _colorController.dispose();
+    super.dispose();
   }
 
   @override
@@ -148,6 +186,50 @@ class _ExportSettingsDialogState extends State<_ExportSettingsDialog> {
               style: TextStyle(fontSize: 12),
             ),
           ),
+          const SizedBox(height: 8),
+          const Text('Background color', style: TextStyle(fontSize: 13)),
+          const SizedBox(height: 6),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final entry in _presetColors.entries)
+                _ColorSwatch(
+                  color: _colorFromHex(entry.value),
+                  selected: _backgroundColorHex == entry.value,
+                  tooltip: entry.key,
+                  onTap: () => _setBackgroundColor(entry.value),
+                ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Container(
+                width: 28,
+                height: 28,
+                decoration: BoxDecoration(
+                  color: _hexPattern.hasMatch(_backgroundColorHex)
+                      ? _colorFromHex(_backgroundColorHex)
+                      : Colors.transparent,
+                  border: Border.all(color: Colors.white24),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: TextField(
+                  controller: _colorController,
+                  decoration: const InputDecoration(
+                    labelText: 'Hex color',
+                    isDense: true,
+                  ),
+                  style: const TextStyle(fontSize: 14),
+                  onChanged: _onHexChanged,
+                ),
+              ),
+            ],
+          ),
         ],
       ),
       actions: [
@@ -160,11 +242,59 @@ class _ExportSettingsDialogState extends State<_ExportSettingsDialog> {
             _ExportSettings(
               measuresPerWindow: _measuresPerWindow,
               showPlayhead: _showPlayhead,
+              backgroundColor: _backgroundColorHex,
             ),
           ),
           child: const Text('Start Export'),
         ),
       ],
+    );
+  }
+}
+
+/// A small tappable color circle used for background-color presets.
+class _ColorSwatch extends StatelessWidget {
+  const _ColorSwatch({
+    required this.color,
+    required this.selected,
+    required this.tooltip,
+    required this.onTap,
+  });
+
+  final Color color;
+  final bool selected;
+  final String tooltip;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: tooltip,
+      child: InkWell(
+        customBorder: const CircleBorder(),
+        onTap: onTap,
+        child: Container(
+          width: 28,
+          height: 28,
+          decoration: BoxDecoration(
+            color: color,
+            shape: BoxShape.circle,
+            border: Border.all(
+              color: selected ? Colors.blueAccent : Colors.white24,
+              width: selected ? 2 : 1,
+            ),
+          ),
+          child: selected
+              ? Icon(
+                  Icons.check,
+                  size: 16,
+                  color: color.computeLuminance() > 0.5
+                      ? Colors.black
+                      : Colors.white,
+                )
+              : null,
+        ),
+      ),
     );
   }
 }
@@ -178,6 +308,7 @@ class _ExportDialog extends StatefulWidget {
     required this.measuresPerWindow,
     required this.highlightBeats,
     required this.showPlayhead,
+    required this.backgroundColor,
   });
 
   final List<TabNote> notes;
@@ -187,6 +318,7 @@ class _ExportDialog extends StatefulWidget {
   final int measuresPerWindow;
   final int highlightBeats;
   final bool showPlayhead;
+  final String backgroundColor;
 
   @override
   State<_ExportDialog> createState() => _ExportDialogState();
@@ -430,7 +562,7 @@ class _ExportDialogState extends State<_ExportDialog> {
     leftPadding: _leftPadding,
     bpm: widget.bpm,
     totalDuration: widget.totalDuration,
-    backgroundColor: '#00B140',
+    backgroundColor: widget.backgroundColor,
     measuresPerWindow: widget.measuresPerWindow,
     beatsPerMeasure: widget.beatsPerMeasure,
     highlightBeats: widget.highlightBeats,
