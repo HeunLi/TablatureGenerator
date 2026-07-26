@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(flutter analyze *)",
+      "Bash(flutter build *)",
+      "Bash(flutter test *)",
+      "Bash(flutter pub *)",
+      "Bash(cd \"d:/CodeProjects/Websites/Tablature\" && flutter pub add web && find / -path \"*/file_picker-11*/lib/file_picker.dart\" 2>/dev/null)",
+      "Read(//d//**)"
+    ]
+  }
+}
