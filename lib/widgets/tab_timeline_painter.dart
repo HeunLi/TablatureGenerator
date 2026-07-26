@@ -1,8 +1,141 @@
+import 'dart:ui' as ui;
+
 import 'package:flutter/material.dart';
 
+import '../audio/waveform_extractor.dart';
 import '../models/tab_note.dart';
 import 'glass_panel.dart';
 import 'tab_timeline_layout.dart';
+
+/// Caches the waveform preview strip as a recorded [ui.Picture] so
+/// [TabTimelinePainter] doesn't have to rebuild it from scratch on every
+/// single playhead tick during playback (~60/sec via the interpolating
+/// `Ticker` — see `StudioScreen`). The waveform bars themselves only
+/// actually change when the buffered window scrolls, the zoom (BPM)
+/// changes, or the waveform data itself changes (new audio decoded) — not
+/// when the playhead moves — so a cache keyed on those inputs turns
+/// "rebuild ~2000 pixel columns of bucket lookups + Path construction" into
+/// "one cheap `canvas.drawPicture` call" for every frame where only the
+/// playhead moved, which during steady playback with no scrolling is
+/// nearly every frame.
+///
+/// Owned by `_StudioScreenState` (one instance, created once) rather than
+/// by [TabTimelinePainter] itself, since a fresh painter instance is
+/// constructed on every rebuild (each `ValueListenableBuilder` playhead
+/// tick) — a cache field on the painter wouldn't survive between frames.
+class WaveformPictureCache {
+  ui.Picture? _picture;
+  double? _windowStartSeconds;
+  double? _windowEndSeconds;
+  double? _pixelsPerSecond;
+  double? _waveformTop;
+  WaveformData? _waveform;
+
+  ui.Picture? get({
+    required double windowStartSeconds,
+    required double windowEndSeconds,
+    required double pixelsPerSecond,
+    required double waveformTop,
+    required WaveformData waveform,
+  }) {
+    if (_picture != null &&
+        _windowStartSeconds == windowStartSeconds &&
+        _windowEndSeconds == windowEndSeconds &&
+        _pixelsPerSecond == pixelsPerSecond &&
+        _waveformTop == waveformTop &&
+        identical(_waveform, waveform)) {
+      return _picture;
+    }
+    return null;
+  }
+
+  void store(
+    ui.Picture picture, {
+    required double windowStartSeconds,
+    required double windowEndSeconds,
+    required double pixelsPerSecond,
+    required double waveformTop,
+    required WaveformData waveform,
+  }) {
+    _picture?.dispose();
+    _picture = picture;
+    _windowStartSeconds = windowStartSeconds;
+    _windowEndSeconds = windowEndSeconds;
+    _pixelsPerSecond = pixelsPerSecond;
+    _waveformTop = waveformTop;
+    _waveform = waveform;
+  }
+
+  void dispose() {
+    _picture?.dispose();
+    _picture = null;
+  }
+}
+
+/// Caches the beat/measure grid (lines + per-measure number labels) and
+/// the string lines/labels as a recorded [ui.Picture] — same idea and same
+/// reason as [WaveformPictureCache], for a cost that turned out to matter
+/// even more in practice: none of this content depends on the *notes* at
+/// all, but `TabTimelinePainter.paint()` runs on every note-drag update too
+/// (`shouldRepaint` returns true whenever the `notes` list changes, which
+/// it does on every pointer-move frame of a drag) — without this cache, a
+/// fully static grid (potentially a couple hundred lines across a buffered
+/// window, several with their own `TextPainter` for the measure number)
+/// was being rebuilt from scratch on every single frame of a note drag,
+/// not just every playhead tick.
+class GridPictureCache {
+  ui.Picture? _picture;
+  double? _windowStartSeconds;
+  double? _windowEndSeconds;
+  double? _bpm;
+  int? _beatsPerMeasure;
+  TabTimelineLayout? _layout;
+  double? _canvasWidth;
+
+  ui.Picture? get({
+    required double windowStartSeconds,
+    required double windowEndSeconds,
+    required double bpm,
+    required int beatsPerMeasure,
+    required TabTimelineLayout layout,
+    required double canvasWidth,
+  }) {
+    if (_picture != null &&
+        _windowStartSeconds == windowStartSeconds &&
+        _windowEndSeconds == windowEndSeconds &&
+        _bpm == bpm &&
+        _beatsPerMeasure == beatsPerMeasure &&
+        _layout == layout &&
+        _canvasWidth == canvasWidth) {
+      return _picture;
+    }
+    return null;
+  }
+
+  void store(
+    ui.Picture picture, {
+    required double windowStartSeconds,
+    required double windowEndSeconds,
+    required double bpm,
+    required int beatsPerMeasure,
+    required TabTimelineLayout layout,
+    required double canvasWidth,
+  }) {
+    _picture?.dispose();
+    _picture = picture;
+    _windowStartSeconds = windowStartSeconds;
+    _windowEndSeconds = windowEndSeconds;
+    _bpm = bpm;
+    _beatsPerMeasure = beatsPerMeasure;
+    _layout = layout;
+    _canvasWidth = canvasWidth;
+  }
+
+  void dispose() {
+    _picture?.dispose();
+    _picture = null;
+  }
+}
 
 /// Renders bass tab notes on a time-based timeline: x-axis is seconds,
 /// each of the 4 strings is a horizontal line, and fret numbers are drawn
@@ -19,6 +152,10 @@ class TabTimelinePainter extends CustomPainter {
     this.highlightBeats = 4,
     this.selectedIndices = const {},
     this.windowStartSeconds = 0,
+    this.waveform,
+    this.audioLoaded = false,
+    this.waveformCache,
+    this.gridCache,
     double? windowEndSeconds,
   }) : windowEndSeconds = windowEndSeconds ?? totalSeconds;
 
@@ -50,6 +187,28 @@ class TabTimelinePainter extends CustomPainter {
 
   final Set<int> selectedIndices;
 
+  /// Precomputed peak buckets for the waveform preview strip drawn beneath
+  /// the string lines — null while no audio is loaded, or while it's still
+  /// being decoded/extracted (see `StudioScreen._extractWaveform`).
+  final WaveformData? waveform;
+
+  /// Distinguishes "no audio loaded" from "audio loaded, waveform still
+  /// decoding" for the placeholder text shown when [waveform] is null.
+  final bool audioLoaded;
+
+  /// Optional cache for the recorded waveform [ui.Picture] — see
+  /// [WaveformPictureCache]. Null falls back to rebuilding the waveform
+  /// path directly every paint (correct, just not cheap on every frame).
+  final WaveformPictureCache? waveformCache;
+
+  /// Optional cache for the recorded grid/string-lines [ui.Picture] — see
+  /// [GridPictureCache]. Null falls back to rebuilding the grid directly
+  /// every paint (correct, just not cheap on every frame).
+  final GridPictureCache? gridCache;
+
+  static const _waveformHeight = 56.0;
+  static const _waveformGapAboveBottomY = 30.0;
+
   bool _isRinging(TabNote note) {
     final start = note.timeOffset;
     final end = note.timeOffset + note.duration;
@@ -58,13 +217,6 @@ class TabTimelinePainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final linePaint = Paint()
-      ..color = Colors.white.withValues(alpha: 0.22)
-      ..strokeWidth = 1;
-    final gridPaint = Paint()
-      ..color = Colors.white.withValues(alpha: 0.07)
-      ..strokeWidth = 1;
-
     final bottomY =
         layout.topPadding +
         (TabTimelineLayout.stringOrderTopToBottom.length - 1) *
@@ -90,6 +242,175 @@ class TabTimelinePainter extends CustomPainter {
         Paint()..color = const Color(0x59FFEB3B), // amber @ ~35% opacity
       );
     }
+
+    // Beat/measure grid + string lines/labels — entirely independent of
+    // `notes`, but this paint() call runs on every note-drag update too
+    // (shouldRepaint triggers on `notes` changes), so this is cached the
+    // same way as the waveform (see GridPictureCache) rather than rebuilt
+    // — potentially a couple hundred lines plus a TextPainter per measure
+    // — on every single drag frame.
+    final gridCached = gridCache?.get(
+      windowStartSeconds: windowStartSeconds,
+      windowEndSeconds: windowEndSeconds,
+      bpm: bpm,
+      beatsPerMeasure: beatsPerMeasure,
+      layout: layout,
+      canvasWidth: size.width,
+    );
+    if (gridCached != null) {
+      canvas.drawPicture(gridCached);
+    } else {
+      final recorder = ui.PictureRecorder();
+      _paintGridAndStrings(Canvas(recorder), bottomY, size.width);
+      final picture = recorder.endRecording();
+      gridCache?.store(
+        picture,
+        windowStartSeconds: windowStartSeconds,
+        windowEndSeconds: windowEndSeconds,
+        bpm: bpm,
+        beatsPerMeasure: beatsPerMeasure,
+        layout: layout,
+        canvasWidth: size.width,
+      );
+      canvas.drawPicture(picture);
+    }
+
+    // Notes. Same buffered-window bound as the grid lines above.
+    for (var i = 0; i < notes.length; i++) {
+      final note = notes[i];
+      final noteSeconds =
+          note.timeOffset.inMicroseconds / Duration.microsecondsPerSecond;
+      if (noteSeconds < windowStartSeconds || noteSeconds > windowEndSeconds) {
+        continue;
+      }
+      final x = layout.xForTime(note.timeOffset);
+      final y = layout.yForString(note.string);
+      final ringing = _isRinging(note);
+      final selected = selectedIndices.contains(i);
+
+      if (selected) {
+        canvas.drawCircle(
+          Offset(x, y),
+          16,
+          Paint()
+            ..color = accentColor
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 2,
+        );
+      }
+
+      final circlePaint = Paint()
+        ..color = ringing ? Colors.orangeAccent : const Color(0xFF3A3D52);
+      canvas.drawCircle(Offset(x, y), 12, circlePaint);
+
+      final tp = TextPainter(
+        text: TextSpan(
+          text: '${note.fret}',
+          style: TextStyle(
+            color: ringing ? Colors.black : Colors.white,
+            fontSize: 13,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      tp.paint(canvas, Offset(x - tp.width / 2, y - tp.height / 2));
+    }
+
+    // Waveform preview strip, drawn beneath the string lines using the
+    // same time->pixel mapping as everything else (via layout.xForTime),
+    // so it scrolls and rescales in lockstep with the notes/grid rather
+    // than needing a separately-synced scroll view. One vertical bar per
+    // screen pixel — not per waveform bucket — bounds its cost to roughly
+    // "viewport width" regardless of how finely [waveform] was sampled or
+    // how long the track is, matching the buffered-window discipline used
+    // everywhere else in this painter.
+    final waveformTop = bottomY + _waveformGapAboveBottomY;
+    final waveformBottom = waveformTop + _waveformHeight;
+    final waveformMidY = waveformTop + _waveformHeight / 2;
+    final waveform = this.waveform;
+    if (waveform != null && waveform.bucketCount > 0) {
+      // Rebuilding the bars (bucket lookups + Path construction across
+      // potentially ~2000 pixel columns) on every single playhead tick was
+      // still measurably costly even after batching into one Path/drawPath
+      // (see WaveformPictureCache doc) — the playhead moving doesn't change
+      // the bars at all, only scrolling/zoom/new-audio does. So: reuse a
+      // cached recording keyed on those inputs when possible, and only
+      // pay the rebuild cost when something that actually changes the bars
+      // has changed.
+      final cached = waveformCache?.get(
+        windowStartSeconds: windowStartSeconds,
+        windowEndSeconds: windowEndSeconds,
+        pixelsPerSecond: layout.pixelsPerSecond,
+        waveformTop: waveformTop,
+        waveform: waveform,
+      );
+      if (cached != null) {
+        canvas.drawPicture(cached);
+      } else {
+        final recorder = ui.PictureRecorder();
+        _paintWaveformBars(
+          Canvas(recorder),
+          waveform,
+          waveformMidY,
+          size.width,
+        );
+        final picture = recorder.endRecording();
+        waveformCache?.store(
+          picture,
+          windowStartSeconds: windowStartSeconds,
+          windowEndSeconds: windowEndSeconds,
+          pixelsPerSecond: layout.pixelsPerSecond,
+          waveformTop: waveformTop,
+          waveform: waveform,
+        );
+        canvas.drawPicture(picture);
+      }
+    } else {
+      final tp = TextPainter(
+        text: TextSpan(
+          text: audioLoaded ? 'Decoding waveform…' : 'No audio loaded',
+          style: TextStyle(
+            color: Colors.white.withValues(alpha: 0.3),
+            fontSize: 12,
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      tp.paint(
+        canvas,
+        Offset(layout.leftPadding, waveformMidY - tp.height / 2),
+      );
+    }
+
+    // Playhead. Extends down through the waveform strip too, so it's
+    // obvious where playback currently sits relative to the waveform, not
+    // just relative to the notes.
+    final playheadX = layout.xForTime(playhead);
+    final playheadPaint = Paint()
+      ..color = Colors.redAccent
+      ..strokeWidth = 2;
+    canvas.drawLine(
+      Offset(playheadX, layout.topPadding - 20),
+      Offset(playheadX, waveformBottom),
+      playheadPaint,
+    );
+  }
+
+  /// Draws the beat/measure grid (with per-measure number labels) and the
+  /// string lines/labels onto [canvas] — either the real timeline canvas
+  /// (when [gridCache] is null) or a throwaway recording [Canvas] backed
+  /// by a [ui.PictureRecorder], whose result then gets cached (see
+  /// [GridPictureCache]). Entirely independent of [notes]/[selectedIndices]
+  /// /[playhead] — everything drawn here only depends on the buffered
+  /// window, tempo, and time signature.
+  void _paintGridAndStrings(Canvas canvas, double bottomY, double canvasWidth) {
+    final linePaint = Paint()
+      ..color = Colors.white.withValues(alpha: 0.22)
+      ..strokeWidth = 1;
+    final gridPaint = Paint()
+      ..color = Colors.white.withValues(alpha: 0.07)
+      ..strokeWidth = 1;
 
     // Beat subdivision grid lines; a brighter line marks each measure
     // boundary (every beatsPerMeasure beats), matching the project's
@@ -147,7 +468,7 @@ class TabTimelinePainter extends CustomPainter {
       final y = layout.yForString(string);
       canvas.drawLine(
         Offset(layout.leftPadding, y),
-        Offset(size.width, y),
+        Offset(canvasWidth, y),
         linePaint,
       );
       final tp = TextPainter(
@@ -159,58 +480,67 @@ class TabTimelinePainter extends CustomPainter {
       )..layout();
       tp.paint(canvas, Offset(12, y - tp.height / 2));
     }
+  }
 
-    // Notes. Same buffered-window bound as the grid lines above.
-    for (var i = 0; i < notes.length; i++) {
-      final note = notes[i];
-      final noteSeconds =
-          note.timeOffset.inMicroseconds / Duration.microsecondsPerSecond;
-      if (noteSeconds < windowStartSeconds || noteSeconds > windowEndSeconds) {
-        continue;
-      }
-      final x = layout.xForTime(note.timeOffset);
-      final y = layout.yForString(note.string);
-      final ringing = _isRinging(note);
-      final selected = selectedIndices.contains(i);
-
-      if (selected) {
-        canvas.drawCircle(
-          Offset(x, y),
-          16,
-          Paint()
-            ..color = accentColor
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = 2,
-        );
-      }
-
-      final circlePaint = Paint()
-        ..color = ringing ? Colors.orangeAccent : const Color(0xFF3A3D52);
-      canvas.drawCircle(Offset(x, y), 12, circlePaint);
-
-      final tp = TextPainter(
-        text: TextSpan(
-          text: '${note.fret}',
-          style: TextStyle(
-            color: ringing ? Colors.black : Colors.white,
-            fontSize: 13,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-        textDirection: TextDirection.ltr,
-      )..layout();
-      tp.paint(canvas, Offset(x - tp.width / 2, y - tp.height / 2));
-    }
-
-    // Playhead.
-    final playheadX = layout.xForTime(playhead);
-    final playheadPaint = Paint()
-      ..color = Colors.redAccent
-      ..strokeWidth = 2;
+  /// Draws the waveform baseline + bars onto [canvas] — either the real
+  /// timeline canvas (when [waveformCache] is null) or a throwaway
+  /// recording [Canvas] backed by a [ui.PictureRecorder], whose result
+  /// then gets cached (see [WaveformPictureCache]). One vertical bar per
+  /// screen pixel, not per waveform bucket — bounds cost to roughly
+  /// "viewport width" regardless of how finely [waveform] was sampled or
+  /// how long the track is, matching the buffered-window discipline used
+  /// everywhere else in this painter. Batched into a single `Path` +
+  /// `drawPath` call rather than one `drawLine` per pixel — far fewer
+  /// draw-call submissions for the same visual output (note: `drawPath`
+  /// respects `Paint.style`, unlike `drawLine`, which always strokes
+  /// regardless — the stroke style below is required, not cosmetic).
+  void _paintWaveformBars(
+    Canvas canvas,
+    WaveformData waveform,
+    double waveformMidY,
+    double canvasWidth,
+  ) {
     canvas.drawLine(
-      Offset(playheadX, layout.topPadding - 20),
-      Offset(playheadX, bottomY + 20),
-      playheadPaint,
+      Offset(layout.leftPadding, waveformMidY),
+      Offset(canvasWidth, waveformMidY),
+      Paint()..color = Colors.white.withValues(alpha: 0.08),
+    );
+    final startX = layout.xForTime(
+      Duration(microseconds: (windowStartSeconds * 1e6).round()),
+    );
+    final endX = layout.xForTime(
+      Duration(microseconds: (windowEndSeconds * 1e6).round()),
+    );
+    final secondsPerPixel = 1 / layout.pixelsPerSecond;
+    final lastBucket = waveform.bucketCount - 1;
+    final barPath = Path();
+    for (var x = startX.floorToDouble(); x <= endX; x += 1) {
+      final pixelStartSeconds =
+          (x - layout.leftPadding) / layout.pixelsPerSecond;
+      if (pixelStartSeconds < 0) continue;
+      final bucketStart =
+          waveform.bucketForSeconds(pixelStartSeconds).clamp(0, lastBucket);
+      final bucketEnd = waveform
+          .bucketForSeconds(pixelStartSeconds + secondsPerPixel)
+          .clamp(bucketStart, lastBucket);
+      var amplitude = 0.0;
+      for (var b = bucketStart; b <= bucketEnd; b++) {
+        final peak = waveform.maxPeaks[b] > -waveform.minPeaks[b]
+            ? waveform.maxPeaks[b]
+            : -waveform.minPeaks[b];
+        if (peak > amplitude) amplitude = peak;
+      }
+      final halfHeight = amplitude.clamp(0.0, 1.0) * (_waveformHeight / 2);
+      barPath
+        ..moveTo(x, waveformMidY - halfHeight)
+        ..lineTo(x, waveformMidY + halfHeight);
+    }
+    canvas.drawPath(
+      barPath,
+      Paint()
+        ..color = accentColor.withValues(alpha: 0.55)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1,
     );
   }
 
@@ -225,6 +555,8 @@ class TabTimelinePainter extends CustomPainter {
         oldDelegate.totalSeconds != totalSeconds ||
         oldDelegate.windowStartSeconds != windowStartSeconds ||
         oldDelegate.windowEndSeconds != windowEndSeconds ||
+        oldDelegate.waveform != waveform ||
+        oldDelegate.audioLoaded != audioLoaded ||
         oldDelegate.layout != layout;
   }
 }

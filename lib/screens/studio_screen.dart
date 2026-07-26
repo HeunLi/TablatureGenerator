@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:just_audio/just_audio.dart';
 
 import '../audio/audio_controller.dart';
+import '../audio/waveform_extractor.dart';
 import '../export/tab_video_exporter.dart';
 import '../models/tab_note.dart';
 import '../models/tab_project.dart';
@@ -100,6 +101,14 @@ class _StudioScreenState extends State<StudioScreen>
   String? _audioFileName;
   Uint8List? _audioBytes;
   String? _audioExtension;
+
+  // Null while no audio is loaded, or while a just-loaded/just-picked
+  // track is still being decoded — see [_extractWaveform]. Decoding is
+  // keyed by an incrementing token so a slow decode for a track the user
+  // has since replaced can't clobber a newer (or absent) result when it
+  // finally resolves.
+  WaveformData? _waveform;
+  int _waveformRequestId = 0;
   // Shift+click toggles membership in this set instead of replacing it,
   // for selecting multiple notes at once. A plain click replaces it with a
   // single-element set.
@@ -126,6 +135,17 @@ class _StudioScreenState extends State<StudioScreen>
   // true audio position.
   bool _snapToGrid = true;
   final _timelineScrollController = ScrollController();
+
+  // Owned here (not by TabTimelinePainter) since a fresh painter instance
+  // is constructed on every rebuild — a cache field on the painter itself
+  // wouldn't survive between frames. See WaveformPictureCache's doc.
+  final _waveformPictureCache = WaveformPictureCache();
+
+  // Same reasoning as _waveformPictureCache, for the beat/measure grid and
+  // string lines — content that's entirely independent of note positions
+  // but was being rebuilt on every note-drag update anyway. See
+  // GridPictureCache's doc.
+  final _gridPictureCache = GridPictureCache();
 
   // Autosave: any edit that touches `_project` (or picking new audio)
   // (re)starts this debounce timer rather than saving immediately, so
@@ -182,6 +202,10 @@ class _StudioScreenState extends State<StudioScreen>
   // 100 BPM, so the default view is unchanged.
   static const _pixelsPerBeat = 72.0;
   double get _pixelsPerSecond => _pixelsPerBeat * _project.bpm / 60;
+
+  // Tall enough for the string lines (was 220 pre-waveform) plus the
+  // waveform preview strip TabTimelinePainter draws beneath them.
+  static const _timelineCanvasHeight = 300.0;
   TabTimelineLayout get _layout => TabTimelineLayout(
         pixelsPerSecond: _pixelsPerSecond,
         stringSpacing: 48,
@@ -288,6 +312,27 @@ class _StudioScreenState extends State<StudioScreen>
         _audioFileName = 'restored audio';
         _audioLoaded = true;
       });
+      _extractWaveform(saved.audioBytes!);
+    }
+  }
+
+  /// Decodes [bytes] into waveform peaks for the preview strip beneath the
+  /// timeline (see [WaveformExtractor]). Fire-and-forget from the caller's
+  /// perspective — runs in the background and updates [_waveform] via
+  /// setState whenever it finishes, rather than blocking audio load/pick on
+  /// it.
+  Future<void> _extractWaveform(Uint8List bytes) async {
+    final requestId = ++_waveformRequestId;
+    setState(() => _waveform = null);
+    try {
+      final data = await WaveformExtractor.extract(bytes);
+      // A newer request (a different track picked while this one was still
+      // decoding) has since started — this result is stale, drop it rather
+      // than overwriting the newer (or absent) waveform.
+      if (!mounted || requestId != _waveformRequestId) return;
+      setState(() => _waveform = data);
+    } catch (e) {
+      debugPrint('Waveform extraction failed: $e');
     }
   }
 
@@ -331,6 +376,8 @@ class _StudioScreenState extends State<StudioScreen>
     _timelineScrollController.removeListener(_handleScroll);
     _timelineScrollController.dispose();
     _playhead.dispose();
+    _waveformPictureCache.dispose();
+    _gridPictureCache.dispose();
     super.dispose();
   }
 
@@ -400,6 +447,7 @@ class _StudioScreenState extends State<StudioScreen>
     });
     _audioDirty = true;
     _scheduleAutosave();
+    _extractWaveform(bytes);
     _lastKnownPosition = Duration.zero;
     _playhead.value = Duration.zero;
   }
@@ -614,18 +662,34 @@ class _StudioScreenState extends State<StudioScreen>
     final stringDelta = (pixelDy / _layout.stringSpacing).round();
     const stringOrder = TabTimelineLayout.stringOrderTopToBottom;
 
+    // Pointer-move events fire far more often than the snapped grid cell
+    // (or string row) actually changes — computing the would-be new values
+    // first and bailing out here when nothing actually changed skips an
+    // expensive setState (a full StudioScreen rebuild, including the
+    // BackdropFilter-blurred toolbar/transport/floating panels) for what
+    // would otherwise be a no-op update.
+    var changed = false;
+    final updates = <int, TabNote>{};
+    for (final entry in originals.entries) {
+      var newTime = entry.value.timeOffset + deltaTime;
+      if (newTime.isNegative) newTime = Duration.zero;
+      if (_snapToGrid) newTime = _layout.snapToGrid(newTime, _project.bpm);
+      final originalStringIndex = stringOrder.indexOf(entry.value.string);
+      final newStringIndex = (originalStringIndex + stringDelta)
+          .clamp(0, stringOrder.length - 1);
+      final newString = stringOrder[newStringIndex];
+      final current = _project.notes[entry.key];
+      if (current.timeOffset != newTime || current.string != newString) {
+        changed = true;
+      }
+      updates[entry.key] =
+          current.copyWith(timeOffset: newTime, string: newString);
+    }
+    if (!changed) return;
+
     _updateNotes((notes) {
-      for (final entry in originals.entries) {
-        var newTime = entry.value.timeOffset + deltaTime;
-        if (newTime.isNegative) newTime = Duration.zero;
-        if (_snapToGrid) newTime = _layout.snapToGrid(newTime, _project.bpm);
-        final originalStringIndex = stringOrder.indexOf(entry.value.string);
-        final newStringIndex = (originalStringIndex + stringDelta)
-            .clamp(0, stringOrder.length - 1);
-        notes[entry.key] = notes[entry.key].copyWith(
-          timeOffset: newTime,
-          string: stringOrder[newStringIndex],
-        );
+      for (final entry in updates.entries) {
+        notes[entry.key] = entry.value;
       }
       return notes;
     });
@@ -723,7 +787,18 @@ class _StudioScreenState extends State<StudioScreen>
         decoration: const BoxDecoration(gradient: backgroundGradient),
         child: Column(
           children: [
-            _buildToolbar(),
+            // Each of these glass panels (BackdropFilter blur, one of the
+            // more expensive things Flutter can paint) is wrapped in its
+            // own RepaintBoundary. Dragging a note calls setState on this
+            // whole State (see _updateNotes) on every pointer-move frame —
+            // without a boundary, that full-tree rebuild was forcing these
+            // panels to reconsider their (unrelated, unchanged) blur every
+            // single drag frame too, which is measurably expensive stacked
+            // three times over. None of their actual inputs (BPM, playback
+            // state, current selection's fret/string) change when a note's
+            // *position* changes, so isolating them lets Flutter skip
+            // repainting them entirely on drag-position-only updates.
+            RepaintBoundary(child: _buildToolbar()),
             Expanded(
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -735,13 +810,15 @@ class _StudioScreenState extends State<StudioScreen>
                       right: 0,
                       bottom: 12,
                       child: Center(
-                        child: AnimatedSwitcher(
-                          duration: const Duration(milliseconds: 180),
-                          child: _selectedIndices.isEmpty
-                              ? const SizedBox.shrink(key: ValueKey('empty'))
-                              : _buildFloatingEditPanel(
-                                  key: const ValueKey('panel'),
-                                ),
+                        child: RepaintBoundary(
+                          child: AnimatedSwitcher(
+                            duration: const Duration(milliseconds: 180),
+                            child: _selectedIndices.isEmpty
+                                ? const SizedBox.shrink(key: ValueKey('empty'))
+                                : _buildFloatingEditPanel(
+                                    key: const ValueKey('panel'),
+                                  ),
+                          ),
                         ),
                       ),
                     ),
@@ -749,7 +826,7 @@ class _StudioScreenState extends State<StudioScreen>
                 ),
               ),
             ),
-            _buildTransportBar(),
+            RepaintBoundary(child: _buildTransportBar()),
           ],
         ),
       ),
@@ -922,10 +999,14 @@ class _StudioScreenState extends State<StudioScreen>
                         selectedIndices: _selectedIndices,
                         windowStartSeconds: _windowStart,
                         windowEndSeconds: _windowEnd,
+                        waveform: _waveform,
+                        audioLoaded: _audioLoaded,
+                        waveformCache: _waveformPictureCache,
+                        gridCache: _gridPictureCache,
                       ),
                       size: Size(
                         _totalSeconds * _pixelsPerSecond + 80,
-                        220,
+                        _timelineCanvasHeight,
                       ),
                     ),
                   ),
