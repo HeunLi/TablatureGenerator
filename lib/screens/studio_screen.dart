@@ -127,6 +127,43 @@ class _StudioScreenState extends State<StudioScreen>
   bool _snapToGrid = true;
   final _timelineScrollController = ScrollController();
 
+  // Autosave: any edit that touches `_project` (or picking new audio)
+  // (re)starts this debounce timer rather than saving immediately, so
+  // rapid-fire changes (dragging a note, holding a stepper) don't each
+  // trigger their own IndexedDB write. `_audioDirty` is tracked
+  // separately from "the project needs saving" because audio bytes can be
+  // multiple MB — re-writing them on every autosave tick even when only a
+  // note moved would be needless IndexedDB churn; they're only sent to
+  // `ProjectStore.save` when they've actually changed since the last save.
+  static const _autosaveDelay = Duration(seconds: 2);
+  Timer? _autosaveTimer;
+  bool _hasUnsavedChanges = false;
+  bool _audioDirty = false;
+
+  void _scheduleAutosave() {
+    // Guarded so a note drag (which calls this once per pointer-move frame
+    // via `_updateNotes`) doesn't trigger a rebuild on every single frame —
+    // only the first dirtying change in a burst needs to flip the
+    // indicator; the timer reset below is cheap and still happens every
+    // call, keeping the debounce anchored to the *last* change.
+    if (!_hasUnsavedChanges) {
+      setState(() => _hasUnsavedChanges = true);
+    }
+    _autosaveTimer?.cancel();
+    _autosaveTimer = Timer(_autosaveDelay, _autosave);
+  }
+
+  Future<void> _autosave() async {
+    await _store.save(
+      _project,
+      audioBytes: _audioDirty ? _audioBytes : null,
+      audioExtension: _audioDirty ? _audioExtension : null,
+    );
+    _audioDirty = false;
+    if (!mounted) return;
+    setState(() => _hasUnsavedChanges = false);
+  }
+
   // The buffered [start, end] time range (seconds) that the timeline
   // painter actually draws — see [_recomputeWindow]. Defaults match the
   // initial `_totalSeconds` placeholder until the first layout/scroll
@@ -165,6 +202,9 @@ class _StudioScreenState extends State<StudioScreen>
       bpm: 100,
       notes: [],
     );
+    // A brand-new project has nothing saved under its id yet, so it starts
+    // "unsaved" rather than waiting for the first edit to say so.
+    _hasUnsavedChanges = widget.isNewProject;
 
     // A real update is a correction, not the thing that moves the line —
     // see the field docs on `_ticker` for why.
@@ -252,12 +292,17 @@ class _StudioScreenState extends State<StudioScreen>
   }
 
   Future<void> _saveProject() async {
+    // A manual save always sends the full audio blob (simpler and rare
+    // enough not to matter) and preempts any pending debounced autosave.
+    _autosaveTimer?.cancel();
     await _store.save(
       _project,
       audioBytes: _audioBytes,
       audioExtension: _audioExtension,
     );
+    _audioDirty = false;
     if (!mounted) return;
+    setState(() => _hasUnsavedChanges = false);
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Project saved locally'), duration: Duration(seconds: 1)),
     );
@@ -265,6 +310,19 @@ class _StudioScreenState extends State<StudioScreen>
 
   @override
   void dispose() {
+    _autosaveTimer?.cancel();
+    if (_hasUnsavedChanges) {
+      // Best-effort: a debounced autosave that hadn't fired yet shouldn't
+      // silently drop the last few seconds of edits just because the user
+      // navigated away. Can't await inside dispose(), so this is
+      // fire-and-forget — ProjectStore/Hive don't depend on this widget's
+      // lifecycle, so the write still completes after disposal.
+      unawaited(_store.save(
+        _project,
+        audioBytes: _audioDirty ? _audioBytes : null,
+        audioExtension: _audioDirty ? _audioExtension : null,
+      ));
+    }
     _positionSub?.cancel();
     _durationSub?.cancel();
     _playerStateSub?.cancel();
@@ -320,6 +378,7 @@ class _StudioScreenState extends State<StudioScreen>
     setState(() {
       _project = _project.copyWith(notes: transform([..._project.notes]));
     });
+    _scheduleAutosave();
   }
 
   Future<void> _pickAudio() async {
@@ -339,6 +398,8 @@ class _StudioScreenState extends State<StudioScreen>
       _audioExtension = extension;
       _audioLoaded = true;
     });
+    _audioDirty = true;
+    _scheduleAutosave();
     _lastKnownPosition = Duration.zero;
     _playhead.value = Duration.zero;
   }
@@ -381,6 +442,7 @@ class _StudioScreenState extends State<StudioScreen>
         beatsPerMeasure: (_project.beatsPerMeasure + delta).clamp(1, 12),
       );
     });
+    _scheduleAutosave();
   }
 
   /// Grid snapping ([TabTimelineLayout.snapToGrid]) and the highlight
@@ -396,6 +458,7 @@ class _StudioScreenState extends State<StudioScreen>
       // recomputed too, or it'll no longer line up with what's on screen.
       _recomputeWindow();
     });
+    _scheduleAutosave();
   }
 
   /// Stepping by 1 to reach an arbitrary tempo (e.g. 139) from the default
@@ -437,6 +500,7 @@ class _StudioScreenState extends State<StudioScreen>
       _project = _project.copyWith(bpm: result.clamp(20, 300));
       _recomputeWindow();
     });
+    _scheduleAutosave();
   }
 
   /// Flutter's `Scrollable` only maps mouse-wheel *vertical* motion
@@ -617,9 +681,24 @@ class _StudioScreenState extends State<StudioScreen>
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
-        title: Text(
-          _project.title,
-          style: const TextStyle(fontWeight: FontWeight.w600),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              _project.title,
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
+            Text(
+              _hasUnsavedChanges ? 'Unsaved changes…' : 'All changes saved',
+              style: TextStyle(
+                fontSize: 11,
+                color: _hasUnsavedChanges
+                    ? Colors.amber.withValues(alpha: 0.85)
+                    : Colors.white.withValues(alpha: 0.4),
+              ),
+            ),
+          ],
         ),
         actions: [
           IconButton(
@@ -629,7 +708,7 @@ class _StudioScreenState extends State<StudioScreen>
           ),
           IconButton(
             icon: const Icon(Icons.save_outlined),
-            tooltip: 'Save project locally',
+            tooltip: 'Save now',
             onPressed: _saveProject,
           ),
           IconButton(
