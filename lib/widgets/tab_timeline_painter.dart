@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../models/tab_note.dart';
+import 'glass_panel.dart';
 import 'tab_timeline_layout.dart';
 
 /// Renders bass tab notes on a time-based timeline: x-axis is seconds,
@@ -58,10 +59,10 @@ class TabTimelinePainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final linePaint = Paint()
-      ..color = Colors.white24
+      ..color = Colors.white.withValues(alpha: 0.22)
       ..strokeWidth = 1;
     final gridPaint = Paint()
-      ..color = Colors.white10
+      ..color = Colors.white.withValues(alpha: 0.07)
       ..strokeWidth = 1;
 
     final bottomY =
@@ -98,7 +99,7 @@ class TabTimelinePainter extends CustomPainter {
     final beatMs = 60000 / bpm;
     final gridMs = beatMs / 4;
     final measurePaint = Paint()
-      ..color = Colors.white38
+      ..color = accentColor.withValues(alpha: 0.55)
       ..strokeWidth = 1.5;
     final windowStartMs = (windowStartSeconds * 1000).clamp(0, double.infinity);
     final gridStartMs = (windowStartMs / gridMs).floor() * gridMs;
@@ -157,14 +158,14 @@ class TabTimelinePainter extends CustomPainter {
           Offset(x, y),
           16,
           Paint()
-            ..color = Colors.white
+            ..color = accentColor
             ..style = PaintingStyle.stroke
             ..strokeWidth = 2,
         );
       }
 
       final circlePaint = Paint()
-        ..color = ringing ? Colors.orangeAccent : Colors.blueGrey.shade700;
+        ..color = ringing ? Colors.orangeAccent : const Color(0xFF3A3D52);
       canvas.drawCircle(Offset(x, y), 12, circlePaint);
 
       final tp = TextPainter(

@@ -13,6 +13,7 @@ import '../models/tab_note.dart';
 import '../models/tab_project.dart';
 import '../persistence/project_store.dart';
 import '../utils/safe_pop.dart';
+import '../widgets/glass_panel.dart';
 import '../widgets/tab_timeline_layout.dart';
 import '../widgets/tab_timeline_painter.dart';
 
@@ -612,15 +613,15 @@ class _StudioScreenState extends State<StudioScreen>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: const Color(0xFF12131A),
       appBar: AppBar(
-        title: Text(_project.title),
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        title: Text(
+          _project.title,
+          style: const TextStyle(fontWeight: FontWeight.w600),
+        ),
         actions: [
-          if (_audioLoaded)
-            IconButton(
-              icon: Icon(_isPlaying ? Icons.pause : Icons.play_arrow),
-              tooltip: _isPlaying ? 'Pause' : 'Play',
-              onPressed: _togglePlayback,
-            ),
           IconButton(
             icon: const Icon(Icons.upload_file),
             tooltip: 'Upload audio',
@@ -639,268 +640,369 @@ class _StudioScreenState extends State<StudioScreen>
           const SizedBox(width: 8),
         ],
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
+      body: DecoratedBox(
+        decoration: const BoxDecoration(gradient: backgroundGradient),
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text(
-              _audioFileName == null
-                  ? 'No audio loaded — tap the upload icon to sync a track.'
-                  : 'Synced to: $_audioFileName',
-              style: const TextStyle(color: Colors.white54, fontSize: 12),
-            ),
-            const SizedBox(height: 4),
-            const Text(
-              'Tap the grid to add a note. Drag a note to move it. '
-              'Select a note to edit its fret or delete it.',
-              style: TextStyle(color: Colors.white54, fontSize: 12),
-            ),
-            const SizedBox(height: 4),
-            Wrap(
-              crossAxisAlignment: WrapCrossAlignment.center,
-              runSpacing: 4,
-              children: [
-                const Text(
-                  'BPM:',
-                  style: TextStyle(color: Colors.white54, fontSize: 12),
-                ),
-                IconButton(
-                  iconSize: 18,
-                  visualDensity: VisualDensity.compact,
-                  icon: const Icon(Icons.remove_circle_outline),
-                  onPressed: () => _adjustBpm(-1),
-                ),
-                InkWell(
-                  onTap: _promptBpm,
-                  child: Text(
-                    _project.bpm.toStringAsFixed(0),
-                    style: const TextStyle(
-                      fontSize: 13,
-                      decoration: TextDecoration.underline,
-                    ),
-                  ),
-                ),
-                IconButton(
-                  iconSize: 18,
-                  visualDensity: VisualDensity.compact,
-                  icon: const Icon(Icons.add_circle_outline),
-                  onPressed: () => _adjustBpm(1),
-                ),
-                const SizedBox(width: 16),
-                const Text(
-                  'Time signature:',
-                  style: TextStyle(color: Colors.white54, fontSize: 12),
-                ),
-                IconButton(
-                  iconSize: 18,
-                  visualDensity: VisualDensity.compact,
-                  icon: const Icon(Icons.remove_circle_outline),
-                  onPressed: () => _adjustBeatsPerMeasure(-1),
-                ),
-                Text(
-                  '${_project.beatsPerMeasure}/4',
-                  style: const TextStyle(fontSize: 13),
-                ),
-                IconButton(
-                  iconSize: 18,
-                  visualDensity: VisualDensity.compact,
-                  icon: const Icon(Icons.add_circle_outline),
-                  onPressed: () => _adjustBeatsPerMeasure(1),
-                ),
-                const SizedBox(width: 16),
-                const Text(
-                  'Highlight:',
-                  style: TextStyle(color: Colors.white54, fontSize: 12),
-                ),
-                IconButton(
-                  iconSize: 18,
-                  visualDensity: VisualDensity.compact,
-                  icon: const Icon(Icons.remove_circle_outline),
-                  onPressed: () => _adjustHighlightBeats(-1),
-                ),
-                Text(
-                  '$_highlightBeats beat${_highlightBeats == 1 ? '' : 's'}',
-                  style: const TextStyle(fontSize: 13),
-                ),
-                IconButton(
-                  iconSize: 18,
-                  visualDensity: VisualDensity.compact,
-                  icon: const Icon(Icons.add_circle_outline),
-                  onPressed: () => _adjustHighlightBeats(1),
-                ),
-                const SizedBox(width: 16),
-                const Text(
-                  'Snap to grid:',
-                  style: TextStyle(color: Colors.white54, fontSize: 12),
-                ),
-                Switch(
-                  value: _snapToGrid,
-                  onChanged: (value) => setState(() => _snapToGrid = value),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
+            _buildToolbar(),
             Expanded(
-              child: Listener(
-                onPointerSignal: _handlePointerSignal,
-                child: Scrollbar(
-                  controller: _timelineScrollController,
-                  thumbVisibility: true,
-                  child: SingleChildScrollView(
-                    controller: _timelineScrollController,
-                    scrollDirection: Axis.horizontal,
-                    child: SizedBox(
-                      width: _totalSeconds * _pixelsPerSecond + 80,
-                      child: RawGestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        gestures: {
-                          TapGestureRecognizer:
-                              GestureRecognizerFactoryWithHandlers<
-                                  TapGestureRecognizer>(
-                            () => TapGestureRecognizer(),
-                            (instance) => instance.onTapUp = _handleTapUp,
-                          ),
-                          _NoteDragGestureRecognizer:
-                              GestureRecognizerFactoryWithHandlers<
-                                  _NoteDragGestureRecognizer>(
-                            () => _NoteDragGestureRecognizer(
-                              hitTest: (position) =>
-                                  _layout.hitTestNoteIndex(
-                                    _project.notes,
-                                    position,
-                                  ) !=
-                                  null,
-                            ),
-                            (instance) {
-                              instance
-                                ..onStart = _handlePanStart
-                                ..onUpdate = _handlePanUpdate
-                                ..onEnd = _handlePanEnd;
-                            },
-                          ),
-                        },
-                        // Scoping the playhead subscription to just this
-                        // leaf means a playhead tick during playback only
-                        // ever repaints the timeline itself — the toolbar,
-                        // controls, scrollbar, and gesture detector above
-                        // never rebuild for it.
-                        child: ValueListenableBuilder<Duration>(
-                          valueListenable: _playhead,
-                          builder: (context, playhead, _) => CustomPaint(
-                            painter: TabTimelinePainter(
-                              notes: _project.notes,
-                              layout: _layout,
-                              playhead: playhead,
-                              bpm: _project.bpm,
-                              totalSeconds: _totalSeconds,
-                              beatsPerMeasure: _project.beatsPerMeasure,
-                              highlightBeats: _highlightBeats,
-                              selectedIndices: _selectedIndices,
-                              windowStartSeconds: _windowStart,
-                              windowEndSeconds: _windowEnd,
-                            ),
-                            size: Size(
-                              _totalSeconds * _pixelsPerSecond + 80,
-                              220,
-                            ),
-                          ),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Stack(
+                  children: [
+                    Positioned.fill(child: _buildTimelinePanel()),
+                    Positioned(
+                      left: 0,
+                      right: 0,
+                      bottom: 12,
+                      child: Center(
+                        child: AnimatedSwitcher(
+                          duration: const Duration(milliseconds: 180),
+                          child: _selectedIndices.isEmpty
+                              ? const SizedBox.shrink(key: ValueKey('empty'))
+                              : _buildFloatingEditPanel(
+                                  key: const ValueKey('panel'),
+                                ),
                         ),
                       ),
                     ),
-                  ),
+                  ],
                 ),
               ),
             ),
-            const SizedBox(height: 12),
-            ValueListenableBuilder<Duration>(
-              valueListenable: _playhead,
-              builder: (context, playhead, _) => Row(
-                children: [
-                  Text(_formatDuration(playhead)),
-                  Expanded(
-                    child: Slider(
-                      value: playhead.inMilliseconds
-                          .clamp(0, (_totalSeconds * 1000).toInt())
-                          .toDouble(),
-                      min: 0,
-                      max: _totalSeconds * 1000,
-                      onChangeStart: (_) => _isSeeking = true,
-                      onChanged: (value) {
-                        _playhead.value = Duration(milliseconds: value.toInt());
-                      },
-                      onChangeEnd: (value) {
-                        _isSeeking = false;
-                        final sought = Duration(milliseconds: value.toInt());
-                        // Re-anchor immediately rather than waiting for the
-                        // next positionStream event, so pressing play right
-                        // after a seek doesn't extrapolate from stale data.
-                        _lastKnownPosition = sought;
-                        _positionClock
-                          ..reset()
-                          ..start();
-                        if (_audioLoaded) {
-                          _audio.seek(sought);
-                        }
-                      },
-                    ),
-                  ),
-                  Text('${_totalSeconds.toStringAsFixed(1)}s'),
-                ],
-              ),
-            ),
-            const SizedBox(height: 12),
-            _buildEditPanel(),
+            _buildTransportBar(),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildEditPanel() {
-    if (_selectedIndices.isEmpty) {
-      return const SizedBox(
-        height: 48,
-        child: Center(
-          child: Text(
-            'No note selected',
-            style: TextStyle(color: Colors.white38),
+  /// The control cluster (audio status, BPM, time signature, highlight
+  /// beats, snap toggle) that used to be a wrapping row of raw icon
+  /// buttons — now a single horizontally-scrollable glass toolbar of
+  /// grouped chips, so it stays tidy and legible instead of reflowing
+  /// unpredictably at different window widths.
+  Widget _buildToolbar() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+      child: GlassPanel(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        child: SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(
+            children: [
+              InkWell(
+                onTap: _pickAudio,
+                borderRadius: BorderRadius.circular(20),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 8,
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        _audioLoaded ? Icons.graphic_eq : Icons.music_off,
+                        size: 16,
+                        color: Colors.white.withValues(alpha: 0.5),
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        _audioFileName ?? 'No audio — tap to upload',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.white.withValues(alpha: 0.6),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              _toolbarDivider(),
+              _StepperChip(
+                label: 'BPM',
+                value: _project.bpm.toStringAsFixed(0),
+                onDecrement: () => _adjustBpm(-1),
+                onIncrement: () => _adjustBpm(1),
+                onTapValue: _promptBpm,
+              ),
+              _toolbarDivider(),
+              _StepperChip(
+                label: 'Time',
+                value: '${_project.beatsPerMeasure}/4',
+                onDecrement: () => _adjustBeatsPerMeasure(-1),
+                onIncrement: () => _adjustBeatsPerMeasure(1),
+              ),
+              _toolbarDivider(),
+              _StepperChip(
+                label: 'Highlight',
+                value:
+                    '$_highlightBeats beat${_highlightBeats == 1 ? '' : 's'}',
+                onDecrement: () => _adjustHighlightBeats(-1),
+                onIncrement: () => _adjustHighlightBeats(1),
+              ),
+              _toolbarDivider(),
+              _SnapToggleChip(
+                enabled: _snapToGrid,
+                onChanged: (value) => setState(() => _snapToGrid = value),
+              ),
+              _toolbarDivider(),
+              Tooltip(
+                message: 'Tap to add a note. Drag to move it. '
+                    'Shift+click to multi-select. Double-click a note to '
+                    'delete it.',
+                child: Icon(
+                  Icons.info_outline,
+                  size: 18,
+                  color: Colors.white.withValues(alpha: 0.35),
+                ),
+              ),
+              const SizedBox(width: 4),
+            ],
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _toolbarDivider() => Container(
+        width: 1,
+        height: 24,
+        margin: const EdgeInsets.symmetric(horizontal: 10),
+        color: Colors.white.withValues(alpha: 0.08),
       );
-    }
+
+  /// The scrollable/gesture-driven timeline, now wrapped in a solid dark
+  /// panel surface (not blurred glass — this repaints on every playhead
+  /// tick during playback, and it's a precision editing surface, so a
+  /// steady, high-contrast background matters more here than the glass
+  /// look used for static chrome elsewhere).
+  Widget _buildTimelinePanel() {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(16),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: const Color(0xFF15161D),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+        ),
+        child: Listener(
+          onPointerSignal: _handlePointerSignal,
+          child: Scrollbar(
+            controller: _timelineScrollController,
+            thumbVisibility: true,
+            child: SingleChildScrollView(
+              controller: _timelineScrollController,
+              scrollDirection: Axis.horizontal,
+              child: SizedBox(
+                width: _totalSeconds * _pixelsPerSecond + 80,
+                child: RawGestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  gestures: {
+                    TapGestureRecognizer:
+                        GestureRecognizerFactoryWithHandlers<
+                            TapGestureRecognizer>(
+                      () => TapGestureRecognizer(),
+                      (instance) => instance.onTapUp = _handleTapUp,
+                    ),
+                    _NoteDragGestureRecognizer:
+                        GestureRecognizerFactoryWithHandlers<
+                            _NoteDragGestureRecognizer>(
+                      () => _NoteDragGestureRecognizer(
+                        hitTest: (position) =>
+                            _layout.hitTestNoteIndex(
+                              _project.notes,
+                              position,
+                            ) !=
+                            null,
+                      ),
+                      (instance) {
+                        instance
+                          ..onStart = _handlePanStart
+                          ..onUpdate = _handlePanUpdate
+                          ..onEnd = _handlePanEnd;
+                      },
+                    ),
+                  },
+                  // Scoping the playhead subscription to just this leaf
+                  // means a playhead tick during playback only ever
+                  // repaints the timeline itself — the toolbar, controls,
+                  // scrollbar, and gesture detector above never rebuild
+                  // for it.
+                  child: ValueListenableBuilder<Duration>(
+                    valueListenable: _playhead,
+                    builder: (context, playhead, _) => CustomPaint(
+                      painter: TabTimelinePainter(
+                        notes: _project.notes,
+                        layout: _layout,
+                        playhead: playhead,
+                        bpm: _project.bpm,
+                        totalSeconds: _totalSeconds,
+                        beatsPerMeasure: _project.beatsPerMeasure,
+                        highlightBeats: _highlightBeats,
+                        selectedIndices: _selectedIndices,
+                        windowStartSeconds: _windowStart,
+                        windowEndSeconds: _windowEnd,
+                      ),
+                      size: Size(
+                        _totalSeconds * _pixelsPerSecond + 80,
+                        220,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Playback transport — pulled out of the toolbar into its own pinned
+  /// bottom bar (play/pause, scrub slider, current/total time), separating
+  /// "play the track" from "edit the tab" the way a DAW's transport bar
+  /// does, rather than mixing it in with the BPM/time-signature controls.
+  Widget _buildTransportBar() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+      child: GlassPanel(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+        child: ValueListenableBuilder<Duration>(
+          valueListenable: _playhead,
+          builder: (context, playhead, _) => Row(
+            children: [
+              IconButton(
+                iconSize: 30,
+                icon: Icon(
+                  _isPlaying
+                      ? Icons.pause_circle_filled
+                      : Icons.play_circle_fill,
+                  color: _audioLoaded
+                      ? accentColor
+                      : Colors.white.withValues(alpha: 0.25),
+                ),
+                tooltip: _isPlaying ? 'Pause' : 'Play',
+                onPressed: _audioLoaded ? _togglePlayback : null,
+              ),
+              const SizedBox(width: 4),
+              Text(
+                _formatDuration(playhead),
+                style: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.7),
+                  fontSize: 12,
+                ),
+              ),
+              Expanded(
+                child: SliderTheme(
+                  data: SliderTheme.of(context).copyWith(
+                    activeTrackColor: accentColor,
+                    thumbColor: accentColor,
+                    overlayColor: accentColor.withValues(alpha: 0.2),
+                    inactiveTrackColor: Colors.white.withValues(alpha: 0.15),
+                  ),
+                  child: Slider(
+                    value: playhead.inMilliseconds
+                        .clamp(0, (_totalSeconds * 1000).toInt())
+                        .toDouble(),
+                    min: 0,
+                    max: _totalSeconds * 1000,
+                    onChangeStart: (_) => _isSeeking = true,
+                    onChanged: (value) {
+                      _playhead.value = Duration(milliseconds: value.toInt());
+                    },
+                    onChangeEnd: (value) {
+                      _isSeeking = false;
+                      final sought = Duration(milliseconds: value.toInt());
+                      // Re-anchor immediately rather than waiting for the
+                      // next positionStream event, so pressing play right
+                      // after a seek doesn't extrapolate from stale data.
+                      _lastKnownPosition = sought;
+                      _positionClock
+                        ..reset()
+                        ..start();
+                      if (_audioLoaded) {
+                        _audio.seek(sought);
+                      }
+                    },
+                  ),
+                ),
+              ),
+              Text(
+                '${_totalSeconds.toStringAsFixed(1)}s',
+                style: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.5),
+                  fontSize: 12,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// The note-editing panel (fret +/-, delete) now only exists while
+  /// something's selected — floating over the bottom of the timeline
+  /// instead of permanently reserving space that reads "No note selected"
+  /// most of the time.
+  Widget _buildFloatingEditPanel({Key? key}) {
     // Single-selection shows the exact string/fret; multi-selection shows a
     // count and lets fret +/- apply as a relative shift to every selected
     // note (their frets may differ, so there's no single value to display).
     final single = _selectedIndices.length == 1
         ? _project.notes[_selectedIndices.single]
         : null;
-    return SizedBox(
-      height: 48,
+    return GlassPanel(
+      key: key,
+      borderColor: accentColor,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       child: Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Text(single != null
-              ? 'String ${single.string.name.toUpperCase()}'
-              : '${_selectedIndices.length} notes selected'),
-          const SizedBox(width: 16),
-          const Text('Fret:'),
-          IconButton(
-            icon: const Icon(Icons.remove_circle_outline),
-            onPressed: () => _adjustFret(-1),
+          Text(
+            single != null
+                ? 'String ${single.string.name.toUpperCase()}'
+                : '${_selectedIndices.length} notes selected',
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+            ),
           ),
-          Text(single != null ? '${single.fret}' : '±',
-              style: const TextStyle(fontSize: 16)),
-          IconButton(
-            icon: const Icon(Icons.add_circle_outline),
-            onPressed: () => _adjustFret(1),
+          const SizedBox(width: 14),
+          const Text('Fret', style: TextStyle(color: Colors.white54, fontSize: 11)),
+          _ChipIconButton(icon: Icons.remove, onPressed: () => _adjustFret(-1)),
+          SizedBox(
+            width: 26,
+            child: Text(
+              single != null ? '${single.fret}' : '±',
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                fontSize: 15,
+                color: Colors.white,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
           ),
-          const SizedBox(width: 16),
-          TextButton.icon(
-            onPressed: _deleteSelected,
-            icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
-            label: Text(
-              single != null ? 'Delete' : 'Delete all',
-              style: const TextStyle(color: Colors.redAccent),
+          _ChipIconButton(icon: Icons.add, onPressed: () => _adjustFret(1)),
+          const SizedBox(width: 10),
+          InkWell(
+            onTap: _deleteSelected,
+            borderRadius: BorderRadius.circular(20),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.delete_outline, color: Colors.redAccent, size: 18),
+                  const SizedBox(width: 4),
+                  Text(
+                    single != null ? 'Delete' : 'Delete all',
+                    style: const TextStyle(color: Colors.redAccent, fontSize: 13),
+                  ),
+                ],
+              ),
             ),
           ),
         ],
@@ -911,5 +1013,137 @@ class _StudioScreenState extends State<StudioScreen>
   String _formatDuration(Duration d) {
     final seconds = d.inMilliseconds / 1000;
     return '${seconds.toStringAsFixed(1)}s';
+  }
+}
+
+/// A labeled value with -/+ steppers, e.g. "BPM  −  100  +". Shared by the
+/// BPM/time-signature/highlight-beats toolbar chips so they can't visually
+/// drift apart from each other.
+class _StepperChip extends StatelessWidget {
+  const _StepperChip({
+    required this.label,
+    required this.value,
+    required this.onDecrement,
+    required this.onIncrement,
+    this.onTapValue,
+  });
+
+  final String label;
+  final String value;
+  final VoidCallback onDecrement;
+  final VoidCallback onIncrement;
+  final VoidCallback? onTapValue;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          label,
+          style: TextStyle(
+            color: Colors.white.withValues(alpha: 0.45),
+            fontSize: 11,
+          ),
+        ),
+        const SizedBox(width: 6),
+        _ChipIconButton(icon: Icons.remove, onPressed: onDecrement),
+        InkWell(
+          onTap: onTapValue,
+          borderRadius: BorderRadius.circular(6),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+            child: Text(
+              value,
+              style: const TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: Colors.white,
+              ),
+            ),
+          ),
+        ),
+        _ChipIconButton(icon: Icons.add, onPressed: onIncrement),
+      ],
+    );
+  }
+}
+
+/// Small round tap target used for the -/+ steppers and the floating edit
+/// panel's fret adjusters — a compact alternative to a full `IconButton`
+/// that fits the toolbar's tighter chip spacing.
+class _ChipIconButton extends StatelessWidget {
+  const _ChipIconButton({required this.icon, required this.onPressed});
+
+  final IconData icon;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onPressed,
+      borderRadius: BorderRadius.circular(20),
+      child: Padding(
+        padding: const EdgeInsets.all(5),
+        child: Icon(
+          icon,
+          size: 15,
+          color: Colors.white.withValues(alpha: 0.65),
+        ),
+      ),
+    );
+  }
+}
+
+/// The snap-to-grid toggle, restyled as a pill that fills with the accent
+/// color when enabled rather than a bare `Switch` + label — reads more
+/// like a toolbar mode toggle (e.g. a DAW's magnet/snap icon) than a
+/// settings checkbox.
+class _SnapToggleChip extends StatelessWidget {
+  const _SnapToggleChip({required this.enabled, required this.onChanged});
+
+  final bool enabled;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: () => onChanged(!enabled),
+      borderRadius: BorderRadius.circular(20),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(20),
+          color: enabled
+              ? accentColor.withValues(alpha: 0.25)
+              : Colors.white.withValues(alpha: 0.05),
+          border: Border.all(
+            color: enabled
+                ? accentColor.withValues(alpha: 0.6)
+                : Colors.white.withValues(alpha: 0.12),
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.grid_4x4,
+              size: 14,
+              color: enabled ? accentColor : Colors.white.withValues(alpha: 0.5),
+            ),
+            const SizedBox(width: 6),
+            Text(
+              'Snap',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+                color: enabled ? Colors.white : Colors.white.withValues(alpha: 0.5),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }

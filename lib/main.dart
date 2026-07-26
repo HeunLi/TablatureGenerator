@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:hive_ce_flutter/hive_flutter.dart';
 
 import 'screens/dashboard_screen.dart';
+import 'widgets/glass_panel.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -41,7 +42,16 @@ class BassTabStudioApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Bass Tab Studio',
-      theme: ThemeData.dark(useMaterial3: true),
+      // Seeded from the dashboard's violet accent (see dashboard_screen.dart)
+      // so dialog buttons, selection highlights, etc. feel like one
+      // consistent app rather than the dashboard being an unrelated skin.
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: accentColor,
+          brightness: Brightness.dark,
+        ),
+        useMaterial3: true,
+      ),
       home: const DashboardScreen(),
     );
   }
