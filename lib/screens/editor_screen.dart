@@ -3,6 +3,7 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:just_audio/just_audio.dart';
 
@@ -13,6 +14,25 @@ import '../models/tab_project.dart';
 import '../persistence/project_store.dart';
 import '../widgets/tab_timeline_layout.dart';
 import '../widgets/tab_timeline_painter.dart';
+
+/// A pan recognizer that only enters the gesture arena when the drag
+/// actually starts on a note. Without this, a plain `onPan*` handler on the
+/// timeline claims every drag (including ones meant to scroll the
+/// horizontally-scrolling timeline), starving the ancestor
+/// `SingleChildScrollView`'s drag recognizer and making the timeline
+/// unscrollable. Rejecting the pointer outright (instead of accepting then
+/// losing) lets the scroll view's recognizer win those drags instead.
+class _NoteDragGestureRecognizer extends PanGestureRecognizer {
+  _NoteDragGestureRecognizer({required this.hitTest});
+
+  final bool Function(Offset localPosition) hitTest;
+
+  @override
+  void addAllowedPointer(PointerDownEvent event) {
+    if (!hitTest(event.localPosition)) return;
+    super.addAllowedPointer(event);
+  }
+}
 
 /// Editor screen: tap the timeline to add notes, drag existing notes to
 /// reposition them (time + string), use the side panel to edit the
@@ -44,6 +64,7 @@ class _EditorScreenState extends State<EditorScreen> {
   int? _selectedIndex;
   int? _draggingIndex;
   int _highlightBeats = 4;
+  final _timelineScrollController = ScrollController();
 
   static const _pixelsPerSecond = 120.0;
   static const _layout = TabTimelineLayout(
@@ -154,6 +175,7 @@ class _EditorScreenState extends State<EditorScreen> {
     _durationSub?.cancel();
     _playerStateSub?.cancel();
     _audio.dispose();
+    _timelineScrollController.dispose();
     super.dispose();
   }
 
@@ -224,6 +246,88 @@ class _EditorScreenState extends State<EditorScreen> {
         beatsPerMeasure: (_project.beatsPerMeasure + delta).clamp(1, 12),
       );
     });
+  }
+
+  /// Grid snapping ([TabTimelineLayout.snapToGrid]) and the highlight
+  /// block's width ([TabTimelineLayout.beatBlockBoundsSeconds]) are both
+  /// already derived from `bpm`, so changing it here immediately reflows
+  /// where notes snap to and how fast the highlight block sweeps through
+  /// beats — no other state needs to change.
+  void _adjustBpm(double delta) {
+    setState(() {
+      _project = _project.copyWith(bpm: (_project.bpm + delta).clamp(20, 300));
+    });
+  }
+
+  /// Stepping by 1 to reach an arbitrary tempo (e.g. 139) from the default
+  /// is tedious, so the BPM readout itself is tappable to type an exact
+  /// value directly.
+  Future<void> _promptBpm() async {
+    final controller =
+        TextEditingController(text: _project.bpm.toStringAsFixed(0));
+    final result = await showDialog<double>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Set BPM'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          keyboardType: const TextInputType.numberWithOptions(),
+          // Popping the dialog synchronously inside onSubmitted tears down
+          // the field's focus scope while EditableText is still in the
+          // middle of its own submit handling, which trips a framework
+          // assertion ("_dependents.isEmpty is not true"). A microtask
+          // still runs before the frame finishes; waiting for the next
+          // full frame via addPostFrameCallback lets that finish first.
+          onSubmitted: (value) {
+            final parsed = double.tryParse(value);
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (context.mounted) Navigator.of(context).pop(parsed);
+            });
+          },
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () =>
+                Navigator.of(context).pop(double.tryParse(controller.text)),
+            child: const Text('Set'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (result == null) return;
+    setState(() {
+      _project = _project.copyWith(bpm: result.clamp(20, 300));
+    });
+  }
+
+  /// Flutter's `Scrollable` only maps mouse-wheel *vertical* motion
+  /// (`scrollDelta.dy`) onto a scroll axis when that axis is vertical — our
+  /// timeline scrolls horizontally, so the default wheel handling ignores
+  /// `dy` entirely and the wheel does nothing. This routes vertical wheel
+  /// deltas onto the horizontal scroll controller ourselves. Horizontal
+  /// wheel/trackpad deltas (`dx`) are left alone; the built-in handling
+  /// already applies those to the horizontal axis correctly.
+  void _handlePointerSignal(PointerSignalEvent event) {
+    if (event is PointerScrollEvent && event.scrollDelta.dy != 0) {
+      GestureBinding.instance.pointerSignalResolver
+          .register(event, _handleWheelScroll);
+    }
+  }
+
+  void _handleWheelScroll(PointerSignalEvent event) {
+    final controller = _timelineScrollController;
+    if (!controller.hasClients) return;
+    final scrollEvent = event as PointerScrollEvent;
+    final position = controller.position;
+    final target = (position.pixels + scrollEvent.scrollDelta.dy)
+        .clamp(position.minScrollExtent, position.maxScrollExtent);
+    controller.jumpTo(target);
   }
 
   void _handleTapUp(TapUpDetails details) {
@@ -340,8 +444,37 @@ class _EditorScreenState extends State<EditorScreen> {
               style: TextStyle(color: Colors.white54, fontSize: 12),
             ),
             const SizedBox(height: 4),
-            Row(
+            Wrap(
+              crossAxisAlignment: WrapCrossAlignment.center,
+              runSpacing: 4,
               children: [
+                const Text(
+                  'BPM:',
+                  style: TextStyle(color: Colors.white54, fontSize: 12),
+                ),
+                IconButton(
+                  iconSize: 18,
+                  visualDensity: VisualDensity.compact,
+                  icon: const Icon(Icons.remove_circle_outline),
+                  onPressed: () => _adjustBpm(-1),
+                ),
+                InkWell(
+                  onTap: _promptBpm,
+                  child: Text(
+                    _project.bpm.toStringAsFixed(0),
+                    style: const TextStyle(
+                      fontSize: 13,
+                      decoration: TextDecoration.underline,
+                    ),
+                  ),
+                ),
+                IconButton(
+                  iconSize: 18,
+                  visualDensity: VisualDensity.compact,
+                  icon: const Icon(Icons.add_circle_outline),
+                  onPressed: () => _adjustBpm(1),
+                ),
+                const SizedBox(width: 16),
                 const Text(
                   'Time signature:',
                   style: TextStyle(color: Colors.white54, fontSize: 12),
@@ -387,28 +520,59 @@ class _EditorScreenState extends State<EditorScreen> {
             ),
             const SizedBox(height: 8),
             Expanded(
-              child: SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: SizedBox(
-                  width: _totalSeconds * _pixelsPerSecond + 80,
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onTapUp: _handleTapUp,
-                    onPanStart: _handlePanStart,
-                    onPanUpdate: _handlePanUpdate,
-                    onPanEnd: _handlePanEnd,
-                    child: CustomPaint(
-                      painter: TabTimelinePainter(
-                        notes: _project.notes,
-                        layout: _layout,
-                        playhead: _playhead,
-                        bpm: _project.bpm,
-                        totalSeconds: _totalSeconds,
-                        beatsPerMeasure: _project.beatsPerMeasure,
-                        highlightBeats: _highlightBeats,
-                        selectedIndex: _selectedIndex,
+              child: Listener(
+                onPointerSignal: _handlePointerSignal,
+                child: Scrollbar(
+                  controller: _timelineScrollController,
+                  thumbVisibility: true,
+                  child: SingleChildScrollView(
+                    controller: _timelineScrollController,
+                    scrollDirection: Axis.horizontal,
+                    child: SizedBox(
+                      width: _totalSeconds * _pixelsPerSecond + 80,
+                      child: RawGestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        gestures: {
+                          TapGestureRecognizer:
+                              GestureRecognizerFactoryWithHandlers<
+                                  TapGestureRecognizer>(
+                            () => TapGestureRecognizer(),
+                            (instance) => instance.onTapUp = _handleTapUp,
+                          ),
+                          _NoteDragGestureRecognizer:
+                              GestureRecognizerFactoryWithHandlers<
+                                  _NoteDragGestureRecognizer>(
+                            () => _NoteDragGestureRecognizer(
+                              hitTest: (position) =>
+                                  _layout.hitTestNoteIndex(
+                                    _project.notes,
+                                    position,
+                                  ) !=
+                                  null,
+                            ),
+                            (instance) {
+                              instance
+                                ..onStart = _handlePanStart
+                                ..onUpdate = _handlePanUpdate
+                                ..onEnd = _handlePanEnd;
+                            },
+                          ),
+                        },
+                        child: CustomPaint(
+                          painter: TabTimelinePainter(
+                            notes: _project.notes,
+                            layout: _layout,
+                            playhead: _playhead,
+                            bpm: _project.bpm,
+                            totalSeconds: _totalSeconds,
+                            beatsPerMeasure: _project.beatsPerMeasure,
+                            highlightBeats: _highlightBeats,
+                            selectedIndex: _selectedIndex,
+                          ),
+                          size:
+                              Size(_totalSeconds * _pixelsPerSecond + 80, 220),
+                        ),
                       ),
-                      size: Size(_totalSeconds * _pixelsPerSecond + 80, 220),
                     ),
                   ),
                 ),

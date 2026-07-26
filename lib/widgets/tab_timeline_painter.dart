@@ -177,6 +177,8 @@ class TabTimelinePainter extends CustomPainter {
         oldDelegate.selectedIndex != selectedIndex ||
         oldDelegate.highlightBeats != highlightBeats ||
         oldDelegate.beatsPerMeasure != beatsPerMeasure ||
+        oldDelegate.bpm != bpm ||
+        oldDelegate.totalSeconds != totalSeconds ||
         oldDelegate.layout != layout;
   }
 }
