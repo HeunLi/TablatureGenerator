@@ -12,6 +12,7 @@ import '../export/tab_video_exporter.dart';
 import '../models/tab_note.dart';
 import '../models/tab_project.dart';
 import '../persistence/project_store.dart';
+import '../utils/safe_pop.dart';
 import '../widgets/tab_timeline_layout.dart';
 import '../widgets/tab_timeline_painter.dart';
 
@@ -34,18 +35,36 @@ class _NoteDragGestureRecognizer extends PanGestureRecognizer {
   }
 }
 
-/// Editor screen: tap the timeline to add notes, drag existing notes to
-/// reposition them (time + string), use the side panel to edit the
-/// fret/duration of whichever note is selected, and upload an audio file
-/// to play back with the tab highlighting in sync.
-class EditorScreen extends StatefulWidget {
-  const EditorScreen({super.key});
+/// The tab editor for a single project: tap the timeline to add notes, drag
+/// existing notes to reposition them (time + string), use the side panel to
+/// edit the fret/duration of whichever note is selected, and upload an
+/// audio file to play back with the tab highlighting in sync.
+///
+/// Reached from [DashboardScreen] (`lib/screens/dashboard_screen.dart`),
+/// which owns project creation/listing/deletion — this screen only ever
+/// works on the one project identified by [projectId].
+class StudioScreen extends StatefulWidget {
+  const StudioScreen({
+    super.key,
+    required this.projectId,
+    this.isNewProject = false,
+  });
+
+  /// The project to load from [ProjectStore], or — when [isNewProject] is
+  /// true — the id a brand-new, not-yet-saved project should use once the
+  /// user does save.
+  final String projectId;
+
+  /// Skips the store lookup and starts from an empty project instead. Set
+  /// by the dashboard's "New project" action, whose generated id has
+  /// nothing saved under it yet.
+  final bool isNewProject;
 
   @override
-  State<EditorScreen> createState() => _EditorScreenState();
+  State<StudioScreen> createState() => _StudioScreenState();
 }
 
-class _EditorScreenState extends State<EditorScreen>
+class _StudioScreenState extends State<StudioScreen>
     with SingleTickerProviderStateMixin {
   late TabProject _project;
   final _audio = AudioController();
@@ -135,41 +154,15 @@ class _EditorScreenState extends State<EditorScreen>
   @override
   void initState() {
     super.initState();
+    // Placeholder until [_loadProject] resolves (or permanently, for a
+    // brand-new project) — kept empty rather than seeded with demo notes
+    // now that every project starts this way, not just the app's very
+    // first run.
     _project = TabProject(
+      id: widget.projectId,
       title: 'Untitled',
       bpm: 100,
-      notes: [
-        TabNote(
-          string: BassString.e,
-          fret: 3,
-          timeOffset: const Duration(milliseconds: 0),
-          duration: const Duration(milliseconds: 500),
-        ),
-        TabNote(
-          string: BassString.a,
-          fret: 2,
-          timeOffset: const Duration(milliseconds: 600),
-          duration: const Duration(milliseconds: 500),
-        ),
-        TabNote(
-          string: BassString.d,
-          fret: 0,
-          timeOffset: const Duration(milliseconds: 1200),
-          duration: const Duration(milliseconds: 500),
-        ),
-        TabNote(
-          string: BassString.g,
-          fret: 5,
-          timeOffset: const Duration(milliseconds: 1800),
-          duration: const Duration(milliseconds: 700),
-        ),
-        TabNote(
-          string: BassString.e,
-          fret: 3,
-          timeOffset: const Duration(milliseconds: 2600),
-          duration: const Duration(milliseconds: 500),
-        ),
-      ],
+      notes: [],
     );
 
     // A real update is a correction, not the thing that moves the line —
@@ -227,7 +220,7 @@ class _EditorScreenState extends State<EditorScreen>
       if (mounted) setState(_recomputeWindow);
     });
 
-    _restoreSavedProject();
+    _loadProject();
   }
 
   void _onTick(Duration elapsed) {
@@ -235,9 +228,11 @@ class _EditorScreenState extends State<EditorScreen>
     _playhead.value = _lastKnownPosition + _positionClock.elapsed;
   }
 
-  Future<void> _restoreSavedProject() async {
+  Future<void> _loadProject() async {
     await _store.init();
-    final saved = _store.load();
+    if (widget.isNewProject) return;
+
+    final saved = _store.load(widget.projectId);
     if (saved == null) return;
 
     setState(() {
@@ -319,7 +314,6 @@ class _EditorScreenState extends State<EditorScreen>
     if (!nearEdge) return;
     setState(_recomputeWindow);
   }
-
 
   void _updateNotes(List<TabNote> Function(List<TabNote>) transform) {
     setState(() {
@@ -417,18 +411,11 @@ class _EditorScreenState extends State<EditorScreen>
           controller: controller,
           autofocus: true,
           keyboardType: const TextInputType.numberWithOptions(),
-          // Popping the dialog synchronously inside onSubmitted tears down
-          // the field's focus scope while EditableText is still in the
-          // middle of its own submit handling, which trips a framework
-          // assertion ("_dependents.isEmpty is not true"). A microtask
-          // still runs before the frame finishes; waiting for the next
-          // full frame via addPostFrameCallback lets that finish first.
-          onSubmitted: (value) {
-            final parsed = double.tryParse(value);
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (context.mounted) Navigator.of(context).pop(parsed);
-            });
-          },
+          // See safePopOnSubmit — popping synchronously (or even after a
+          // single deferred frame) inside onSubmitted can trip a framework
+          // assertion ("_dependents.isEmpty is not true").
+          onSubmitted: (value) =>
+              safePopOnSubmit(context, double.tryParse(value)),
         ),
         actions: [
           TextButton(
@@ -626,7 +613,7 @@ class _EditorScreenState extends State<EditorScreen>
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('Bass Tab Studio — ${_project.title}'),
+        title: Text(_project.title),
         actions: [
           if (_audioLoaded)
             IconButton(

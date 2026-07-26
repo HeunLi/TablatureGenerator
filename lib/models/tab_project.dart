@@ -5,12 +5,18 @@ import 'tab_note.dart';
 /// blob) and referenced only by [audioFileName] here.
 class TabProject {
   TabProject({
+    required this.id,
     required this.title,
     required this.bpm,
     required this.notes,
     this.beatsPerMeasure = 4,
     this.audioFileName,
   });
+
+  /// Stable identifier used as the persistence key ([ProjectStore]) and to
+  /// distinguish projects in the dashboard list — independent of [title],
+  /// which the user can freely rename without losing the saved project.
+  final String id;
 
   final String title;
   final double bpm;
@@ -31,6 +37,7 @@ class TabProject {
     String? audioFileName,
   }) {
     return TabProject(
+      id: id,
       title: title ?? this.title,
       bpm: bpm ?? this.bpm,
       notes: notes ?? this.notes,
@@ -40,6 +47,7 @@ class TabProject {
   }
 
   Map<String, dynamic> toJson() => {
+        'id': id,
         'title': title,
         'bpm': bpm,
         'beatsPerMeasure': beatsPerMeasure,
@@ -48,6 +56,7 @@ class TabProject {
       };
 
   factory TabProject.fromJson(Map<String, dynamic> json) => TabProject(
+        id: json['id'] as String,
         title: json['title'] as String,
         bpm: (json['bpm'] as num).toDouble(),
         beatsPerMeasure: (json['beatsPerMeasure'] as num?)?.toInt() ?? 4,
