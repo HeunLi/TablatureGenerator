@@ -17,13 +17,26 @@ class TabTimelinePainter extends CustomPainter {
     this.beatsPerMeasure = 4,
     this.highlightBeats = 4,
     this.selectedIndex,
-  });
+    this.windowStartSeconds = 0,
+    double? windowEndSeconds,
+  }) : windowEndSeconds = windowEndSeconds ?? totalSeconds;
 
   final List<TabNote> notes;
   final TabTimelineLayout layout;
   final Duration playhead;
   final double bpm;
   final double totalSeconds;
+
+  /// Only the grid lines and notes whose time falls within
+  /// [windowStartSeconds, windowEndSeconds] are actually drawn. The canvas
+  /// itself is still sized for the *whole* track (so scrolling/scrollbar
+  /// extents stay correct) — this just bounds the cost of building the
+  /// draw-command list to roughly "one buffered viewport" instead of the
+  /// entire track. Without it, a multi-minute MP3 makes every repaint
+  /// (which fires on every playhead tick during playback) redo thousands
+  /// of off-screen grid-line draws proportional to track length.
+  final double windowStartSeconds;
+  final double windowEndSeconds;
 
   /// Time signature numerator (e.g. 4 for 4/4, 3 for 3/4) — controls where
   /// the brighter measure bar-lines fall.
@@ -79,13 +92,18 @@ class TabTimelinePainter extends CustomPainter {
 
     // Beat subdivision grid lines; a brighter line marks each measure
     // boundary (every beatsPerMeasure beats), matching the project's
-    // actual time signature instead of assuming 4/4.
+    // actual time signature instead of assuming 4/4. Bounded to the
+    // buffered visible window (see [windowStartSeconds]) rather than the
+    // whole track.
     final beatMs = 60000 / bpm;
     final gridMs = beatMs / 4;
     final measurePaint = Paint()
       ..color = Colors.white38
       ..strokeWidth = 1.5;
-    for (double ms = 0; ms <= totalSeconds * 1000; ms += gridMs) {
+    final windowStartMs = (windowStartSeconds * 1000).clamp(0, double.infinity);
+    final gridStartMs = (windowStartMs / gridMs).floor() * gridMs;
+    final gridEndMs = (windowEndSeconds * 1000).clamp(0, totalSeconds * 1000);
+    for (double ms = gridStartMs; ms <= gridEndMs; ms += gridMs) {
       final x = layout.xForTime(Duration(milliseconds: ms.round()));
       final beatIndex = (ms / beatMs).round();
       final isBeat = (ms % beatMs).abs() < 1 || (beatMs - ms % beatMs) < 1;
@@ -121,9 +139,14 @@ class TabTimelinePainter extends CustomPainter {
       tp.paint(canvas, Offset(12, y - tp.height / 2));
     }
 
-    // Notes.
+    // Notes. Same buffered-window bound as the grid lines above.
     for (var i = 0; i < notes.length; i++) {
       final note = notes[i];
+      final noteSeconds =
+          note.timeOffset.inMicroseconds / Duration.microsecondsPerSecond;
+      if (noteSeconds < windowStartSeconds || noteSeconds > windowEndSeconds) {
+        continue;
+      }
       final x = layout.xForTime(note.timeOffset);
       final y = layout.yForString(note.string);
       final ringing = _isRinging(note);
@@ -179,6 +202,8 @@ class TabTimelinePainter extends CustomPainter {
         oldDelegate.beatsPerMeasure != beatsPerMeasure ||
         oldDelegate.bpm != bpm ||
         oldDelegate.totalSeconds != totalSeconds ||
+        oldDelegate.windowStartSeconds != windowStartSeconds ||
+        oldDelegate.windowEndSeconds != windowEndSeconds ||
         oldDelegate.layout != layout;
   }
 }

@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:just_audio/just_audio.dart';
 
 import '../audio/audio_controller.dart';
@@ -45,7 +46,8 @@ class EditorScreen extends StatefulWidget {
   State<EditorScreen> createState() => _EditorScreenState();
 }
 
-class _EditorScreenState extends State<EditorScreen> {
+class _EditorScreenState extends State<EditorScreen>
+    with SingleTickerProviderStateMixin {
   late TabProject _project;
   final _audio = AudioController();
   final _store = ProjectStore();
@@ -53,7 +55,25 @@ class _EditorScreenState extends State<EditorScreen> {
   StreamSubscription<Duration?>? _durationSub;
   StreamSubscription<PlayerState>? _playerStateSub;
 
-  Duration _playhead = Duration.zero;
+  // A ValueNotifier, not a plain field: it's updated every animation frame
+  // during playback (see [_ticker]), and driving that through setState
+  // would rebuild the entire screen (toolbar, controls, etc.) 60 times a
+  // second. Only the CustomPaint subtree listens to this directly (see
+  // build()), so a tick only ever repaints the timeline itself.
+  final _playhead = ValueNotifier<Duration>(Duration.zero);
+
+  // just_audio's positionStream does not fire every frame — browsers
+  // commonly throttle real <audio> element position updates to a handful
+  // of times per second — so driving the red playhead line directly from
+  // it makes it visibly jump between updates instead of gliding. Instead,
+  // each positionStream event is only used to (re)anchor `_lastKnownPosition`
+  // + restart `_positionClock`; a per-frame `Ticker` then interpolates the
+  // displayed position as `_lastKnownPosition + _positionClock.elapsed`,
+  // which is smooth by construction and gets nudged back in sync every
+  // time a real update arrives (correcting for any audio clock drift).
+  Duration _lastKnownPosition = Duration.zero;
+  final _positionClock = Stopwatch();
+  late final Ticker _ticker;
   double _totalSeconds = 12.0;
   bool _audioLoaded = false;
   bool _isPlaying = false;
@@ -66,13 +86,30 @@ class _EditorScreenState extends State<EditorScreen> {
   int _highlightBeats = 4;
   final _timelineScrollController = ScrollController();
 
-  static const _pixelsPerSecond = 120.0;
-  static const _layout = TabTimelineLayout(
-    pixelsPerSecond: _pixelsPerSecond,
-    stringSpacing: 48,
-    topPadding: 40,
-    leftPadding: 40,
-  );
+  // The buffered [start, end] time range (seconds) that the timeline
+  // painter actually draws — see [_recomputeWindow]. Defaults match the
+  // initial `_totalSeconds` placeholder until the first layout/scroll
+  // recomputes them for the real viewport.
+  double _windowStart = 0;
+  double _windowEnd = 12;
+
+  // Screen width is anchored to a fixed pixels-*per-beat*, not a fixed
+  // pixels-per-second. At a fixed pixels-per-second, a higher BPM packs
+  // more beats into the same horizontal space — the grid visually
+  // compresses and note placement gets fiddly even though nothing about
+  // the window changed. Deriving pixelsPerSecond from BPM keeps each beat
+  // the same width on screen regardless of tempo; the timeline just gets
+  // longer (more to scroll) at higher BPM instead of denser.
+  // 72 px/beat matches the previous fixed 120px/sec at the old default of
+  // 100 BPM, so the default view is unchanged.
+  static const _pixelsPerBeat = 72.0;
+  double get _pixelsPerSecond => _pixelsPerBeat * _project.bpm / 60;
+  TabTimelineLayout get _layout => TabTimelineLayout(
+        pixelsPerSecond: _pixelsPerSecond,
+        stringSpacing: 48,
+        topPadding: 40,
+        leftPadding: 40,
+      );
 
   @override
   void initState() {
@@ -114,27 +151,67 @@ class _EditorScreenState extends State<EditorScreen> {
       ],
     );
 
+    // A real update is a correction, not the thing that moves the line —
+    // see the field docs on `_ticker` for why.
     _positionSub = _audio.positionStream.listen((position) {
       if (_isSeeking) return;
-      setState(() => _playhead = position);
+      _lastKnownPosition = position;
+      _positionClock
+        ..reset()
+        ..start();
+      if (!_isPlaying) {
+        // The ticker isn't advancing it, so apply this directly (e.g. a
+        // late event arriving right as playback paused).
+        _playhead.value = position;
+      }
     });
     _durationSub = _audio.durationStream.listen((duration) {
       if (duration != null && duration.inMilliseconds > 0) {
-        setState(() => _totalSeconds = duration.inMilliseconds / 1000);
+        setState(() {
+          _totalSeconds = duration.inMilliseconds / 1000;
+          _recomputeWindow();
+        });
       }
     });
     _playerStateSub = _audio.playerStateStream.listen((state) {
       setState(() => _isPlaying = state.playing);
+      if (state.playing) {
+        _positionClock
+          ..reset()
+          ..start();
+        _ticker.start();
+      } else {
+        _positionClock.stop();
+        _ticker.stop();
+      }
       if (state.processingState == ProcessingState.completed) {
-        setState(() {
-          _isPlaying = false;
-          _playhead = Duration.zero;
-        });
+        setState(() => _isPlaying = false);
+        _positionClock.stop();
+        _ticker.stop();
+        _lastKnownPosition = Duration.zero;
+        _playhead.value = Duration.zero;
         _audio.seek(Duration.zero);
       }
     });
 
+    // A running Ticker makes Flutter keep pumping frames at the display's
+    // full refresh rate for as long as it's running, so it's only started
+    // while actually playing (above) rather than for the widget's whole
+    // lifetime — otherwise we'd be undoing the point of this by burning
+    // frames continuously even while paused/idle.
+    _ticker = createTicker(_onTick);
+
+    _timelineScrollController.addListener(_handleScroll);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) setState(_recomputeWindow);
+    });
+
     _restoreSavedProject();
+  }
+
+  void _onTick(Duration elapsed) {
+    if (!_isPlaying || _isSeeking) return;
+    _playhead.value = _lastKnownPosition + _positionClock.elapsed;
   }
 
   Future<void> _restoreSavedProject() async {
@@ -175,8 +252,51 @@ class _EditorScreenState extends State<EditorScreen> {
     _durationSub?.cancel();
     _playerStateSub?.cancel();
     _audio.dispose();
+    _ticker.dispose();
+    _timelineScrollController.removeListener(_handleScroll);
     _timelineScrollController.dispose();
+    _playhead.dispose();
     super.dispose();
+  }
+
+  // How many extra viewport-widths of buffer to keep rendered beyond each
+  // edge of the visible area, so small scrolls don't force an immediate
+  // re-render — only scrolling far enough to approach the buffer's edge
+  // does.
+  static const _windowBufferScreens = 2.0;
+
+  /// Recomputes the buffered [_windowStart, _windowEnd] time range that
+  /// [TabTimelinePainter] actually draws, centered on whatever's currently
+  /// visible in the scroll view. Without this, painting scales with the
+  /// *entire* track's grid/notes every repaint — fine for the ~12s
+  /// placeholder, but a real multi-minute MP3 turns every playhead tick
+  /// during playback into thousands of wasted off-screen draw calls.
+  /// Bounding the drawn range to "visible plus a buffer" makes per-repaint
+  /// cost scale with viewport size instead of track length.
+  void _recomputeWindow() {
+    if (!_timelineScrollController.hasClients) return;
+    final position = _timelineScrollController.position;
+    final viewportSeconds = position.viewportDimension / _pixelsPerSecond;
+    final visibleStart = position.pixels / _pixelsPerSecond;
+    final visibleEnd = visibleStart + viewportSeconds;
+    _windowStart = (visibleStart - viewportSeconds * _windowBufferScreens)
+        .clamp(0, double.infinity);
+    _windowEnd = visibleEnd + viewportSeconds * _windowBufferScreens;
+  }
+
+  /// Only recomputes (and thus repaints) once the visible viewport gets
+  /// close to the edge of the already-rendered buffer, not on every scroll
+  /// pixel — scrolling within the buffer needs no repaint at all.
+  void _handleScroll() {
+    if (!_timelineScrollController.hasClients) return;
+    final position = _timelineScrollController.position;
+    final viewportSeconds = position.viewportDimension / _pixelsPerSecond;
+    final visibleStart = position.pixels / _pixelsPerSecond;
+    final visibleEnd = visibleStart + viewportSeconds;
+    final nearEdge = visibleStart < _windowStart + viewportSeconds * 0.5 ||
+        visibleEnd > _windowEnd - viewportSeconds * 0.5;
+    if (!nearEdge) return;
+    setState(_recomputeWindow);
   }
 
   TabNote? get _selectedNote =>
@@ -204,8 +324,9 @@ class _EditorScreenState extends State<EditorScreen> {
       _audioBytes = bytes;
       _audioExtension = extension;
       _audioLoaded = true;
-      _playhead = Duration.zero;
     });
+    _lastKnownPosition = Duration.zero;
+    _playhead.value = Duration.zero;
   }
 
   Future<void> _togglePlayback() async {
@@ -256,6 +377,10 @@ class _EditorScreenState extends State<EditorScreen> {
   void _adjustBpm(double delta) {
     setState(() {
       _project = _project.copyWith(bpm: (_project.bpm + delta).clamp(20, 300));
+      // pixelsPerSecond is derived from bpm, so the buffered window (which
+      // is computed in seconds from the fixed pixel viewport) needs to be
+      // recomputed too, or it'll no longer line up with what's on screen.
+      _recomputeWindow();
     });
   }
 
@@ -303,6 +428,7 @@ class _EditorScreenState extends State<EditorScreen> {
     if (result == null) return;
     setState(() {
       _project = _project.copyWith(bpm: result.clamp(20, 300));
+      _recomputeWindow();
     });
   }
 
@@ -558,19 +684,31 @@ class _EditorScreenState extends State<EditorScreen> {
                             },
                           ),
                         },
-                        child: CustomPaint(
-                          painter: TabTimelinePainter(
-                            notes: _project.notes,
-                            layout: _layout,
-                            playhead: _playhead,
-                            bpm: _project.bpm,
-                            totalSeconds: _totalSeconds,
-                            beatsPerMeasure: _project.beatsPerMeasure,
-                            highlightBeats: _highlightBeats,
-                            selectedIndex: _selectedIndex,
+                        // Scoping the playhead subscription to just this
+                        // leaf means a playhead tick during playback only
+                        // ever repaints the timeline itself — the toolbar,
+                        // controls, scrollbar, and gesture detector above
+                        // never rebuild for it.
+                        child: ValueListenableBuilder<Duration>(
+                          valueListenable: _playhead,
+                          builder: (context, playhead, _) => CustomPaint(
+                            painter: TabTimelinePainter(
+                              notes: _project.notes,
+                              layout: _layout,
+                              playhead: playhead,
+                              bpm: _project.bpm,
+                              totalSeconds: _totalSeconds,
+                              beatsPerMeasure: _project.beatsPerMeasure,
+                              highlightBeats: _highlightBeats,
+                              selectedIndex: _selectedIndex,
+                              windowStartSeconds: _windowStart,
+                              windowEndSeconds: _windowEnd,
+                            ),
+                            size: Size(
+                              _totalSeconds * _pixelsPerSecond + 80,
+                              220,
+                            ),
                           ),
-                          size:
-                              Size(_totalSeconds * _pixelsPerSecond + 80, 220),
                         ),
                       ),
                     ),
@@ -579,32 +717,41 @@ class _EditorScreenState extends State<EditorScreen> {
               ),
             ),
             const SizedBox(height: 12),
-            Row(
-              children: [
-                Text(_formatDuration(_playhead)),
-                Expanded(
-                  child: Slider(
-                    value: _playhead.inMilliseconds
-                        .clamp(0, (_totalSeconds * 1000).toInt())
-                        .toDouble(),
-                    min: 0,
-                    max: _totalSeconds * 1000,
-                    onChangeStart: (_) => _isSeeking = true,
-                    onChanged: (value) {
-                      setState(() {
-                        _playhead = Duration(milliseconds: value.toInt());
-                      });
-                    },
-                    onChangeEnd: (value) {
-                      _isSeeking = false;
-                      if (_audioLoaded) {
-                        _audio.seek(Duration(milliseconds: value.toInt()));
-                      }
-                    },
+            ValueListenableBuilder<Duration>(
+              valueListenable: _playhead,
+              builder: (context, playhead, _) => Row(
+                children: [
+                  Text(_formatDuration(playhead)),
+                  Expanded(
+                    child: Slider(
+                      value: playhead.inMilliseconds
+                          .clamp(0, (_totalSeconds * 1000).toInt())
+                          .toDouble(),
+                      min: 0,
+                      max: _totalSeconds * 1000,
+                      onChangeStart: (_) => _isSeeking = true,
+                      onChanged: (value) {
+                        _playhead.value = Duration(milliseconds: value.toInt());
+                      },
+                      onChangeEnd: (value) {
+                        _isSeeking = false;
+                        final sought = Duration(milliseconds: value.toInt());
+                        // Re-anchor immediately rather than waiting for the
+                        // next positionStream event, so pressing play right
+                        // after a seek doesn't extrapolate from stale data.
+                        _lastKnownPosition = sought;
+                        _positionClock
+                          ..reset()
+                          ..start();
+                        if (_audioLoaded) {
+                          _audio.seek(sought);
+                        }
+                      },
+                    ),
                   ),
-                ),
-                Text('${_totalSeconds.toStringAsFixed(1)}s'),
-              ],
+                  Text('${_totalSeconds.toStringAsFixed(1)}s'),
+                ],
+              ),
             ),
             const SizedBox(height: 12),
             _buildEditPanel(),

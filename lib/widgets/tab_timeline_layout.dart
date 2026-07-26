@@ -17,6 +17,19 @@ class TabTimelineLayout {
   final double topPadding;
   final double leftPadding;
 
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is TabTimelineLayout &&
+          other.pixelsPerSecond == pixelsPerSecond &&
+          other.stringSpacing == stringSpacing &&
+          other.topPadding == topPadding &&
+          other.leftPadding == leftPadding;
+
+  @override
+  int get hashCode =>
+      Object.hash(pixelsPerSecond, stringSpacing, topPadding, leftPadding);
+
   static const List<BassString> stringOrderTopToBottom = [
     BassString.g,
     BassString.d,
