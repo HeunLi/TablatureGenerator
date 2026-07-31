@@ -37,6 +37,30 @@ class TabTimelineLayout {
     BassString.e,
   ];
 
+  /// Height of the waveform preview strip drawn beneath the string lines,
+  /// and the gap between the lowest string line and the top of that strip.
+  /// Kept here rather than on the painter because the waveform *tile*
+  /// renderer (`WaveformTileCache`) needs the exact same numbers to
+  /// rasterize tiles that line up with what the painter draws around them —
+  /// two copies of these constants drifting apart would misalign the strip
+  /// against the playhead.
+  static const waveformHeight = 56.0;
+  static const waveformGap = 30.0;
+
+  /// Y of the lowest string line — the anchor everything below the strings
+  /// (waveform strip, highlight block's bottom edge) is measured from.
+  double get bottomY =>
+      topPadding + (stringOrderTopToBottom.length - 1) * stringSpacing;
+
+  double get waveformTop => bottomY + waveformGap;
+  double get waveformBottom => waveformTop + waveformHeight;
+
+  /// Total scrollable width for a track of [totalSeconds], including the
+  /// left gutter and a little trailing slack so the last notes aren't
+  /// flush against the right edge.
+  double contentWidth(double totalSeconds) =>
+      totalSeconds * pixelsPerSecond + 80;
+
   double xForTime(Duration time) =>
       leftPadding +
       time.inMicroseconds / Duration.microsecondsPerSecond * pixelsPerSecond;
@@ -77,32 +101,15 @@ class TabTimelineLayout {
     return null;
   }
 
-  /// Snaps [time] to the nearest grid subdivision given [bpm].
-  Duration snapToGrid(Duration time, double bpm, {int subdivisionsPerBeat = 4}) {
-    final beatMs = 60000 / bpm;
-    final gridMs = beatMs / subdivisionsPerBeat;
-    final snappedMs = (time.inMilliseconds / gridMs).round() * gridMs;
-    return Duration(milliseconds: snappedMs.round().clamp(0, 1 << 30));
-  }
+  /// Whether [y] falls in the waveform preview strip, which is its own
+  /// interaction zone: tapping there seeks, and dragging there sets the A/B
+  /// loop region. Keeping that band well clear of the string lines is what
+  /// lets those gestures coexist with note editing without any modifier
+  /// key — a drag either starts on the waveform or it doesn't.
+  bool isWaveformY(double y) => y >= waveformTop && y <= waveformBottom;
 
-  /// Start/end (in seconds from the timeline origin) of a block of
-  /// [beatsPerBlock] consecutive beats containing [currentTime] — used both
-  /// for the highlight block (independent of the measure/time signature —
-  /// a 3/4 song might only want 3 beats highlighted, not a fixed 4) and for
-  /// measure-width math (pass the project's actual beats-per-measure).
-  /// Shared by the editor's live preview and the export renderer so both
-  /// always agree on where a block boundary falls.
-  static (double start, double end) beatBlockBoundsSeconds(
-    Duration currentTime,
-    double bpm,
-    int beatsPerBlock,
-  ) {
-    final blockDuration = beatsPerBlock * 60 / bpm;
-    if (blockDuration <= 0) return (0, 0);
-    final currentSeconds =
-        currentTime.inMicroseconds / Duration.microsecondsPerSecond;
-    final index = (currentSeconds / blockDuration).floor();
-    final start = index * blockDuration;
-    return (start, start + blockDuration);
-  }
+  /// Vertical band above the grid reserved for tempo-marker flags. Measure
+  /// numbers sit above it; the grid starts below.
+  double get markerLabelTop => topPadding - 32;
+  double get markerLabelHeight => 15.0;
 }

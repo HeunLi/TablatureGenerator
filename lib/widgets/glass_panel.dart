@@ -98,11 +98,16 @@ class GlassAlertDialog extends StatelessWidget {
     required this.title,
     required this.content,
     this.actions = const [],
+    this.maxWidth = 420,
   });
 
   final Widget title;
   final Widget content;
   final List<Widget> actions;
+
+  /// Widened by dialogs whose content is a table rather than a sentence —
+  /// the tempo-map editor's rows don't fit the prose default.
+  final double maxWidth;
 
   @override
   Widget build(BuildContext context) {
@@ -114,7 +119,7 @@ class GlassAlertDialog extends StatelessWidget {
         blurSigma: 24,
         padding: const EdgeInsets.fromLTRB(24, 20, 24, 16),
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 420),
+          constraints: BoxConstraints(maxWidth: maxWidth),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,

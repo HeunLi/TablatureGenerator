@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'package:web/web.dart' as web;
 
 import '../models/tab_note.dart';
+import '../models/tempo_map.dart';
 import '../widgets/tab_timeline_layout.dart';
 
 /// Draws a single export frame straight onto a native `<canvas>` 2D
@@ -31,15 +32,14 @@ class CanvasTabRenderer {
     required this.ctx,
     required this.width,
     required this.height,
-    required this.pixelsPerSecond,
     required this.stringSpacing,
     required this.topPadding,
     required this.leftPadding,
-    required this.bpm,
+    required this.rightPadding,
+    required this.tempo,
     required this.totalDuration,
     required this.backgroundColor,
     this.measuresPerWindow = 6,
-    this.beatsPerMeasure = 4,
     this.highlightBeats = 4,
     this.showPlayhead = true,
   });
@@ -47,19 +47,19 @@ class CanvasTabRenderer {
   final web.CanvasRenderingContext2D ctx;
   final int width;
   final int height;
-  final double pixelsPerSecond;
   final double stringSpacing;
   final double topPadding;
   final double leftPadding;
-  final double bpm;
+  final double rightPadding;
+
+  /// The project's tempo track — the source of both where measures fall
+  /// (pagination) and where highlight blocks start/end, so the exported
+  /// video tracks tempo changes exactly as the editor preview does.
+  final TempoMap tempo;
+
   final Duration totalDuration;
   final String backgroundColor; // CSS color string, e.g. '#00B140'
   final int measuresPerWindow;
-
-  /// Time signature numerator — how many beats make up a measure for
-  /// pagination purposes (matches the project's actual time signature
-  /// instead of assuming 4/4).
-  final int beatsPerMeasure;
 
   /// How many beats light up together as one highlight block. Independent
   /// of [beatsPerMeasure] — a 3/4 song might want exactly 3 beats
@@ -97,55 +97,69 @@ class CanvasTabRenderer {
   double get _bottomY =>
       topPadding + (_stringOrder.length - 1) * stringSpacing;
 
-  double get _measureDurationSeconds => beatsPerMeasure * 60 / bpm;
-  double get _windowDurationSeconds =>
-      _measureDurationSeconds * measuresPerWindow;
+  static double _seconds(Duration duration) =>
+      duration.inMicroseconds / Duration.microsecondsPerSecond;
 
-  double _currentMeasureIndex(Duration time) {
-    final seconds = time.inMicroseconds / Duration.microsecondsPerSecond;
-    return (seconds / _measureDurationSeconds).floorToDouble();
+  /// 0-based page index containing [time]. Pagination is by *measure*
+  /// rather than by a fixed slice of seconds — with a tempo map there is no
+  /// single measure duration to slice by, and measures are what a reader
+  /// actually navigates by anyway.
+  int _windowIndexAt(Duration time) {
+    final measure = tempo.measureNumberAt(time);
+    // The pick-up region before the first downbeat numbers below 1; it
+    // belongs on the first page.
+    if (measure < 1) return 0;
+    return (measure - 1) ~/ measuresPerWindow;
   }
 
-  double _windowStartSeconds(Duration currentTime) {
-    final measureIndex = _currentMeasureIndex(currentTime).toInt();
-    final windowIndex = measureIndex ~/ measuresPerWindow;
-    return windowIndex * _windowDurationSeconds;
-  }
+  double _windowStartSeconds(int windowIndex) =>
+      _seconds(tempo.measureStart(windowIndex * measuresPerWindow + 1));
+
+  double _windowEndSeconds(int windowIndex) =>
+      _seconds(tempo.measureStart((windowIndex + 1) * measuresPerWindow + 1));
 
   double _yForString(BassString string) =>
       topPadding + _stringOrder.indexOf(string) * stringSpacing;
 
-  double _xForTime(double secondsSinceWindowStart) =>
-      leftPadding + secondsSinceWindowStart * pixelsPerSecond;
+  double get _usableWidth => width - leftPadding - rightPadding;
 
-  double _xForNoteTime(Duration noteTime, double windowStart) {
-    final seconds = noteTime.inMicroseconds / Duration.microsecondsPerSecond;
-    return _xForTime(seconds - windowStart);
+  /// Maps a time onto the page by its *proportion* through the window
+  /// rather than by a fixed pixels-per-second, so every page fills the
+  /// canvas regardless of how long its measures happen to last. Without
+  /// this, a page of slow measures would overflow the frame and a page of
+  /// fast ones would leave half of it blank.
+  double _xForTime(double seconds, double windowStart, double windowEnd) {
+    final span = windowEnd - windowStart;
+    if (span <= 0) return leftPadding;
+    return leftPadding + (seconds - windowStart) / span * _usableWidth;
   }
 
   void drawFrame(List<TabNote> notes, Duration currentTime) {
-    final windowStart = _windowStartSeconds(currentTime);
+    final windowIndex = _windowIndexAt(currentTime);
+    final windowStart = _windowStartSeconds(windowIndex);
+    final windowEnd = _windowEndSeconds(windowIndex);
 
     ctx.fillStyle = backgroundColor.toJS;
     ctx.fillRect(0, 0, width, height);
 
-    _drawMeasureHighlight(currentTime, windowStart);
+    _drawMeasureHighlight(currentTime, windowStart, windowEnd);
     _drawStringLines();
-    _drawNotes(notes, windowStart);
-    if (showPlayhead) _drawPlayhead(currentTime, windowStart);
-    _drawWindowLabel(currentTime);
+    _drawNotes(notes, windowStart, windowEnd);
+    if (showPlayhead) _drawPlayhead(currentTime, windowStart, windowEnd);
+    _drawWindowLabel(windowIndex);
   }
 
-  void _drawMeasureHighlight(Duration currentTime, double windowStart) {
-    final (blockStart, blockEnd) = TabTimelineLayout.beatBlockBoundsSeconds(
-      currentTime,
-      bpm,
-      highlightBeats,
-    );
+  void _drawMeasureHighlight(
+    Duration currentTime,
+    double windowStart,
+    double windowEnd,
+  ) {
+    final (blockStart, blockEnd) =
+        tempo.beatBlockBounds(currentTime, highlightBeats);
     if (blockEnd <= blockStart) return;
 
-    final x0 = _xForTime(blockStart - windowStart);
-    final x1 = _xForTime(blockEnd - windowStart);
+    final x0 = _xForTime(blockStart, windowStart, windowEnd);
+    final x1 = _xForTime(blockEnd, windowStart, windowEnd);
 
     ctx.fillStyle = 'rgba(255, 235, 59, 0.35)'.toJS;
     ctx.fillRect(x0, topPadding - 16, x1 - x0, _bottomY - topPadding + 32);
@@ -163,13 +177,13 @@ class CanvasTabRenderer {
     }
   }
 
-  void _drawNotes(List<TabNote> notes, double windowStart) {
+  void _drawNotes(List<TabNote> notes, double windowStart, double windowEnd) {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.font = 'bold 15px sans-serif';
 
     for (final note in notes) {
-      final x = _xForNoteTime(note.timeOffset, windowStart);
+      final x = _xForTime(_seconds(note.timeOffset), windowStart, windowEnd);
       if (x < -20 || x > width + 20) continue;
       final y = _yForString(note.string);
 
@@ -185,10 +199,12 @@ class CanvasTabRenderer {
     }
   }
 
-  void _drawPlayhead(Duration currentTime, double windowStart) {
-    final seconds =
-        currentTime.inMicroseconds / Duration.microsecondsPerSecond;
-    final x = _xForTime(seconds - windowStart);
+  void _drawPlayhead(
+    Duration currentTime,
+    double windowStart,
+    double windowEnd,
+  ) {
+    final x = _xForTime(_seconds(currentTime), windowStart, windowEnd);
     ctx.strokeStyle = '#3949AB'.toJS;
     ctx.lineWidth = 2;
     ctx.beginPath();
@@ -197,19 +213,17 @@ class CanvasTabRenderer {
     ctx.stroke();
   }
 
-  void _drawWindowLabel(Duration currentTime) {
-    final measureIndex = _currentMeasureIndex(currentTime).toInt();
-    final windowNumber = measureIndex ~/ measuresPerWindow + 1;
-    final totalWindows =
-        ((totalDuration.inMicroseconds / Duration.microsecondsPerSecond) /
-                    _windowDurationSeconds)
-                .ceil()
-                .clamp(1, 1 << 30);
+  void _drawWindowLabel(int windowIndex) {
+    final lastMeasure = tempo.measureNumberAt(totalDuration);
+    final totalWindows = ((lastMeasure < 1 ? 1 : lastMeasure) /
+                measuresPerWindow)
+            .ceil()
+            .clamp(1, 1 << 30);
 
     ctx.textAlign = 'right';
     ctx.textBaseline = 'alphabetic';
     ctx.font = '12px sans-serif';
     ctx.fillStyle = _foregroundColorMuted.toJS;
-    ctx.fillText('$windowNumber / $totalWindows', width - 12, 20);
+    ctx.fillText('${windowIndex + 1} / $totalWindows', width - 12, 20);
   }
 }

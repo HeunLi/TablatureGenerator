@@ -46,6 +46,19 @@ class AudioController {
   Future<void> pause() => player.pause();
   Future<void> seek(Duration position) => player.seek(position);
 
+  /// Playback rate, where 1.0 is normal speed. Slowing a passage down is
+  /// the core transcription move — it's how you hear what's actually being
+  /// played fast enough to place notes against it.
+  ///
+  /// Pitch is preserved: `just_audio` maps this onto the media element's
+  /// `playbackRate`, and browsers default `preservesPitch` to true, so a
+  /// half-speed bass line stays in the same key instead of dropping an
+  /// octave. That matters — a transposed reference is useless for working
+  /// out which fret a note is on.
+  double get speed => player.speed;
+
+  Future<void> setSpeed(double speed) => player.setSpeed(speed);
+
   Future<void> dispose() async {
     await player.dispose();
     if (_currentBlobUrl != null) {

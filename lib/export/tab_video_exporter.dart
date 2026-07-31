@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:web/web.dart' as web;
 
 import '../models/tab_note.dart';
+import '../models/tempo_map.dart';
 import '../widgets/glass_panel.dart';
 import 'canvas_tab_renderer.dart';
 import 'webm_muxer.dart';
@@ -34,9 +35,8 @@ class TabVideoExporter {
   static Future<void> exportChromaKey(
     BuildContext context, {
     required List<TabNote> notes,
-    required double bpm,
+    required TempoMap tempo,
     required Duration totalDuration,
-    required int beatsPerMeasure,
     required int highlightBeats,
   }) async {
     final settings = await showDialog<_ExportSettings>(
@@ -50,9 +50,8 @@ class TabVideoExporter {
       barrierDismissible: false,
       builder: (_) => _ExportDialog(
         notes: notes,
-        bpm: bpm,
+        tempo: tempo,
         totalDuration: totalDuration,
-        beatsPerMeasure: beatsPerMeasure,
         measuresPerWindow: settings.measuresPerWindow,
         highlightBeats: highlightBeats,
         showPlayhead: settings.showPlayhead,
@@ -304,9 +303,8 @@ class _ColorSwatch extends StatelessWidget {
 class _ExportDialog extends StatefulWidget {
   const _ExportDialog({
     required this.notes,
-    required this.bpm,
+    required this.tempo,
     required this.totalDuration,
-    required this.beatsPerMeasure,
     required this.measuresPerWindow,
     required this.highlightBeats,
     required this.showPlayhead,
@@ -314,9 +312,8 @@ class _ExportDialog extends StatefulWidget {
   });
 
   final List<TabNote> notes;
-  final double bpm;
+  final TempoMap tempo;
   final Duration totalDuration;
-  final int beatsPerMeasure;
   final int measuresPerWindow;
   final int highlightBeats;
   final bool showPlayhead;
@@ -331,7 +328,13 @@ typedef _FastPathHandles = ({web.VideoEncoder encoder, WebmMuxer muxer});
 class _ExportDialogState extends State<_ExportDialog> {
   static const _fps = 24;
   static const _height = 220;
-  static const _pixelsPerSecond = 140.0;
+  /// Width one measure gets on the page. Fixed per *measure* rather than
+  /// per second, because with a tempo map there is no single measure
+  /// duration to size the canvas from — and a page of slow measures should
+  /// still read at the same size as a page of fast ones. Chosen to match
+  /// what the previous fixed 140 px/sec produced for 4/4 at 100 BPM, so
+  /// existing exports look unchanged.
+  static const _pixelsPerMeasure = 336.0;
   static const _leftPadding = 60.0;
   static const _rightPadding = 60.0;
   static const _keyFrameIntervalFrames = 96; // ~every 4s at 24fps
@@ -340,12 +343,9 @@ class _ExportDialogState extends State<_ExportDialog> {
   // CanvasTabRenderer) rather than the whole clip, so canvas width only
   // needs to fit one window's worth of time at a legible, fixed spacing —
   // it no longer has to shrink to accommodate arbitrarily long tracks.
-  late final int _width = () {
-    final measureSeconds = widget.beatsPerMeasure * 60 / widget.bpm;
-    final windowSeconds = measureSeconds * widget.measuresPerWindow;
-    return (_leftPadding + windowSeconds * _pixelsPerSecond + _rightPadding)
-        .round();
-  }();
+  late final int _width =
+      (_leftPadding + widget.measuresPerWindow * _pixelsPerMeasure + _rightPadding)
+          .round();
 
   double _progress = 0;
   String _status = 'Preparing…';
@@ -558,15 +558,14 @@ class _ExportDialogState extends State<_ExportDialog> {
     ctx: _ctx,
     width: _width,
     height: _height,
-    pixelsPerSecond: _pixelsPerSecond,
     stringSpacing: 44,
     topPadding: 40,
     leftPadding: _leftPadding,
-    bpm: widget.bpm,
+    rightPadding: _rightPadding,
+    tempo: widget.tempo,
     totalDuration: widget.totalDuration,
     backgroundColor: widget.backgroundColor,
     measuresPerWindow: widget.measuresPerWindow,
-    beatsPerMeasure: widget.beatsPerMeasure,
     highlightBeats: widget.highlightBeats,
     showPlayhead: widget.showPlayhead,
   );

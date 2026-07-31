@@ -1,4 +1,5 @@
 import 'tab_note.dart';
+import 'tempo_map.dart';
 
 /// A tablature project: the notes plus metadata needed to render and sync
 /// them against an audio track. Audio itself is stored separately (as a
@@ -7,9 +8,8 @@ class TabProject {
   TabProject({
     required this.id,
     required this.title,
-    required this.bpm,
     required this.notes,
-    this.beatsPerMeasure = 4,
+    required this.tempo,
     this.audioFileName,
   });
 
@@ -19,29 +19,28 @@ class TabProject {
   final String id;
 
   final String title;
-  final double bpm;
   final List<TabNote> notes;
 
-  /// Time signature numerator — how many beats make up one measure (e.g.
-  /// 4 for 4/4, 3 for 3/4). Not every song is 4/4, so this is a real,
-  /// user-editable setting rather than an assumption baked into the
-  /// renderer.
-  final int beatsPerMeasure;
+  /// The song's tempo track. Replaces what used to be a single `bpm` plus
+  /// a single `beatsPerMeasure`: real music changes tempo and meter, and —
+  /// just as importantly — rarely starts its first downbeat at exactly
+  /// 0:00, which the old model had no way to express at all. See
+  /// [TempoMap].
+  final TempoMap tempo;
+
   final String? audioFileName;
 
   TabProject copyWith({
     String? title,
-    double? bpm,
     List<TabNote>? notes,
-    int? beatsPerMeasure,
+    TempoMap? tempo,
     String? audioFileName,
   }) {
     return TabProject(
       id: id,
       title: title ?? this.title,
-      bpm: bpm ?? this.bpm,
       notes: notes ?? this.notes,
-      beatsPerMeasure: beatsPerMeasure ?? this.beatsPerMeasure,
+      tempo: tempo ?? this.tempo,
       audioFileName: audioFileName ?? this.audioFileName,
     );
   }
@@ -49,8 +48,7 @@ class TabProject {
   Map<String, dynamic> toJson() => {
         'id': id,
         'title': title,
-        'bpm': bpm,
-        'beatsPerMeasure': beatsPerMeasure,
+        'tempo': tempo.toJson(),
         'audioFileName': audioFileName,
         'notes': notes.map((n) => n.toJson()).toList(),
       };
@@ -58,8 +56,17 @@ class TabProject {
   factory TabProject.fromJson(Map<String, dynamic> json) => TabProject(
         id: json['id'] as String,
         title: json['title'] as String,
-        bpm: (json['bpm'] as num).toDouble(),
-        beatsPerMeasure: (json['beatsPerMeasure'] as num?)?.toInt() ?? 4,
+        // Projects saved before the tempo track existed carry a flat
+        // `bpm`/`beatsPerMeasure` pair instead; those describe exactly a
+        // one-marker map starting at 0:00, so they migrate losslessly on
+        // read and are rewritten in the new shape on the next save.
+        tempo: json['tempo'] != null
+            ? TempoMap.fromJson(json['tempo'] as Map<String, dynamic>)
+            : TempoMap.single(
+                bpm: (json['bpm'] as num?)?.toDouble() ?? 100,
+                beatsPerMeasure:
+                    (json['beatsPerMeasure'] as num?)?.toInt() ?? 4,
+              ),
         audioFileName: json['audioFileName'] as String?,
         notes: (json['notes'] as List)
             .map((n) => TabNote.fromJson(n as Map<String, dynamic>))
